@@ -1,8 +1,15 @@
 ---
 description: save build plan
 agent: plan
+subtask: false
 ---
 
-- save current build plan to .opencode/tasks/xxxx-yyMMdd-Vx.x.md
-- 整合精简当前规划
-- 删除计划过程中,已否定的规划
+# how to do
+- Save the current session plan to @.opencode/tasks/xxxx-yyMMdd-Vx.x.md
+- Summarize and optimize the current session plan, especially **discarding rejected steps**
+- use chinese language
+- **only summarize and optimize the plan, do not add any other content**
+
+# Other requirements
+
+$1
