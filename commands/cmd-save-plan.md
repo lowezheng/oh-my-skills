@@ -1,15 +1,45 @@
 ---
-description: save build plan
-agent: plan
+description: 保存当前会话的最终执行计划
 subtask: false
 ---
 
-# how to do
-- Save the current session plan to @.opencode/tasks/xxxx-yyMMdd-Vx.x.md
-- Summarize and optimize the current session plan, especially **discarding rejected steps**
-- use chinese language
-- **only summarize and optimize the plan, do not add any other content**
-
-# Other requirements
-
-$1
+# 功能说明
+    本命令用于将当前 session 中讨论和生成的最终执行计划保存到文件中。
+# 使用场景
+    - 完成需求讨论后，将确定的实施步骤保存为可执行文档
+    - 需要多个 session 协作完成同一任务时，保存中间进度
+    - 为后续执行者或自己回顾时提供清晰的执行路线图
+# 如何操作
+ ## 1. 确定文件路径
+    保存位置：`.opencode/tasks/xxxx-yyMMdd-Vx.x.md`
+    文件命名规范：
+    - `xxxx`: 任务名称的简短描述（英文或拼音）
+    - `yyMMdd`: 日期（例如 250125 表示 2025年1月25日）
+    - `Vx.x`: 版本号（从 V1.0 开始，每次修订递增）
+    示例：`.opencode/tasks/auth-fix-250125-V1.0.md`
+ ## 2. 提炼执行计划
+    从当前 session 的讨论中提取并整理：
+    保留内容
+    - ✅ 已确认的需求和目标
+    - ✅ 最终确定的技术方案
+    - ✅ 具体的实施步骤（TODOs）
+    - ✅ 相关的依赖和引用
+    - ✅ 验证标准和验收条件
+    移除内容
+    - ❌ 已被否决或放弃的方案
+    - ❌ 探索过程中的中间假设
+    - ❌ 不再相关的讨论内容
+    - ❌ 临时性或未确定的想法
+ ## 3. 使用中文书写
+    使用清晰、简洁的中文描述每个步骤。
+ ## 4. 仅关注计划本身
+    不要添加：
+    - 额外的解释性内容
+    - 计划之外的建议或评论
+    - 重复性说明
+ ## 5. 输出格式
+# 参数说明
+    $1 可选参数，用于指定计划文件名称（不包含日期和版本后缀）
+    例如：
+    - cmd-save-plan auth-fix → 生成 auth-fix-250125-V1.0.md
+    - 不提供参数 → 根据任务主题自动推断名称
