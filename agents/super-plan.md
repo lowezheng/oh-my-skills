@@ -52,22 +52,29 @@ permission:
 
 **call_id 生成规则**：
 ```typescript
-// call_id 优先使用 sub agent 的 session_id，否则使用当前 session id
+// 关键：新会话传空（undefined），从应答中读取 session_id 存储
+// session_id 通常以 "ses" 开头（如 ses_abc123...），由后端自动生成
 // 文件名格式：{agent_type}-{call_id}-{timestamp}.md
-// call_id 必须是 session_id（不含时间戳），用于中断回溯
-// 关键：子 session 的 task_id 应包含父 session 引用，以支持回溯
 const currentSessionId = "current-session" // 主 session ID
-const result = await Task({ ... })
+
+// 调用 Sub-Agent 时，传 task_id: undefined（让后端生成新 session_id）
+const result = await Task({
+  subagent_type: "agent-type",
+  prompt: "...",
+  task_id: undefined  // 新会话传空
+})
+
+// 从应答中读取 session_id 存储
 const session_id = result.task_id || result.session_id || currentSessionId
 const call_id = session_id
 const timestamp = Date.now()
-const path = `.plans/{task-name}/thinks/${agent_type}-${call_id}-${timestamp}.md`
+const path = `.plans/${taskName}/thinks/${agent_type}-${call_id}-${timestamp}.md`
 
 // 示例
-// 使用 sub session 时（包含父 session 引用）：.plans/{task-name}/thinks/librarian-current-session-1234567890-abc12345.md
-// 使用当前 session 时：.plans/{task-name}/thinks/oracle-current-session-1739234567890.md
+// 后端生成的 session_id：ses_abc123def456
+// 文件名：.plans/{task-name}/thinks/librarian-ses_abc123def456-1739234567890.md
 
-// 恢复时通过 call_id 查找所有相关文件（支持子 session 回溯）
+// 恢复时通过 call_id 查找所有相关文件（支持中断回溯）
 const agentFiles = glob.sync(`.plans/${taskName}/thinks/${agent_type}-${call_id}-*.md`)
 // 按时间戳排序，取最新的
 const latestFile = agentFiles.sort().pop()
@@ -146,17 +153,17 @@ const latestFile = agentFiles.sort().pop()
 当推理过程被人工或异常中断时，可以通过保存的 session_id 恢复执行：
 
 ```typescript
-// 从文件中读取已保存的 session_id
+// 从文件中读取已保存的 session_id（通常以 "ses" 开头）
 const savedSessionIds = {
-  metis: "metis-abc123-1739234567890",
-  librarian: "librarian-def456-1739234578901",
-  oracle: "oracle-ghi789-1739234589012"
+  metis: "ses_abc123def456",
+  librarian: "ses_def789ghi012",
+  oracle: "ses_ghi345jkl678"
 }
 
 // 恢复时使用相同的 session_id 继续执行
 Task({
   subagent_type: "oracle",
-  task_id: savedSessionIds.oracle,  // 使用已保存的 session_id
+  task_id: savedSessionIds.oracle,  // 使用已保存的 session_id 恢复
   prompt: "继续之前的分析..."
 })
 ```
@@ -164,8 +171,12 @@ Task({
 **恢复步骤**：
 1. 从 `.plans/{task-name}/thinks/` 目录读取已存在的思考文件
 2. 从文件名中提取 session_id（格式：`{agent_type}-{session_id}-{timestamp}.md`）
-3. 使用相同的 session_id 继续调用对应的 Sub-Agent
+3. 使用相同的 session_id 作为 task_id 继续调用对应的 Sub-Agent
 4. 新的输出将追加到相同的 session 中，保持连贯性
+
+**注意**：
+- 初始调用时传 `task_id: undefined`，让后端生成新 session_id
+- 恢复调用时传 `task_id: savedSessionId`，恢复已存在的 session
 
 ---
 
@@ -360,7 +371,7 @@ const sessionStartTime = Date.now()
 
 // 2. 初始化耗时跟踪对象
 const stepTimings = {
-  "step-1": { name: "初始化 + Metis", start: null, end: null, duration: null },
+  "step-1": { name: "初始化 + Metis 洞察", start: null, end: null, duration: null },
   "step-2": { name: "并行 Sub-Agent 执行分析", start: null, end: null, duration: null },
   "step-3": { name: "生成计划", start: null, end: null, duration: null },
   "step-4": { name: "用户决策 + Momus 审查", start: null, end: null, duration: null },
@@ -549,11 +560,11 @@ mkdir -p ".plans/{task-name}/thinks"
 const metisResult = await Task({
   subagent_type: "metis",
   description: "Gap analysis for: {task}",
-  prompt: "在编排之前审查此规划请求：\n\n**用户的请求**：{user's initial request}\n\n**面试总结**：{key points from interview}\n\n**当前理解**：{your interpretation}\n\n请提供：\n1. 意图分类\n2. 应该问但没问的问题\n3. 需要设置的 Guardrails\n4. 潜在的范围蔓延区域\n5. 需要验证的假设\n6. 缺失的验收标准\n7. 推荐调度的 Sub-Agent（及原因）\n8. 计划生成的指令"
+  prompt: "在编排之前审查此规划请求：\n\n**用户的请求**：{user's initial request}\n\n**面试总结**：{key points from interview}\n\n**当前理解**：{your interpretation}\n\n请提供：\n1. 意图分类\n2. 应该问但没问的问题\n3. 需要设置的 Guardrails\n4. 潜在的范围蔓延区域\n5. 需要验证的假设\n6. 缺失的验收标准\n7. 推荐调用的 Sub-Agent（及原因）\n8. 计划生成的指令"
 })
 
-// 使用 session_id 作为 call_id
-const metisCallId = metisResult.task_id || metisResult.session_id || "current-session"
+// 从应答中读取 session_id 存储
+const metisCallId = metisResult.task_id || metisResult.session_id || currentSessionId
 const metisOutputPath = `.plans/${taskName}/thinks/metis-${metisCallId}-${Date.now()}.md`
 // 保存 Metis 输出到文件...
 
@@ -700,7 +711,7 @@ if (needsLibrarian) {
     subagent_type: "librarian",
     description: `Research for: ${task}`,
     prompt: `Research needed for: ${task}\n\n**需求上下文**：${interviewSummary}\n\n请提供：\n1. 官方文档链接\n2. 实现模式\n3. 最佳实践`,
-    task_id: shouldUseSubsession("librarian") ? `librarian-${currentSessionId}-${Date.now()}-${randomHex(8)}` : undefined
+    task_id: undefined
   }
 
   calls.push(callAgentWithTimeout("librarian", taskConfig, 300000, {
@@ -726,7 +737,7 @@ if (needsOracle) {
     subagent_type: "oracle",
     description: `Architecture consultation for: ${task}`,
     prompt: `Architecture consultation needed for: ${task}\n\n**当前上下文**：${contextSummary}`,
-    task_id: shouldUseSubsession("oracle") ? `oracle-${currentSessionId}-${Date.now()}-${randomHex(8)}` : undefined
+    task_id: undefined
   }
 
   calls.push(callAgentWithTimeout("oracle", taskConfig, 300000, {
@@ -753,7 +764,7 @@ if (needsMultimodal) {
     subagent_type: "multimodal-looker",
     description: `Media analysis for: ${task}`,
     prompt: `Analyze media files for: ${task}\n\n**任务上下文**：${interviewSummary}`,
-    task_id: shouldUseSubsession("multimodal-looker") ? `multimodal-looker-${currentSessionId}-${Date.now()}-${randomHex(8)}` : undefined
+    task_id: undefined
   }
 
   calls.push(callAgentWithTimeout("multimodal-looker", taskConfig, 300000, {
@@ -793,8 +804,13 @@ startStep("step-3")
 | 复杂度 | Session Strategy | task_id 使用 |
 |--------|-----------------|-------------|
 | **Simple** (<3) | 所有 Agent 在当前 session | 不使用 task_id（undefined） |
-| **Moderate** (3-6) | Librarian/Oracle 使用子 session | Librarian/Oracle 使用 task_id |
-| **Complex** (≥6) | Librarian/Oracle/Multimodal 使用子 session | Librarian/Oracle/Multimodal 使用 task_id |
+| **Moderate** (3-6) | Librarian/Oracle 使用子 session | 不使用 task_id（undefined），后端生成新 session_id |
+| **Complex** (≥6) | Librarian/Oracle/Multimodal 使用子 session | 不使用 task_id（undefined），后端生成新 session_id |
+
+**关键规则**：
+- 所有 Sub-Agent 初始调用都传 `task_id: undefined`
+- 从应答中读取 `result.task_id` 或 `result.session_id` 存储
+- session_id 通常以 "ses" 开头，如 `ses_abc123def456`
 
 ### STEP 3: SYNTHESIZE PLAN
 
@@ -893,7 +909,7 @@ if (userChoice === "Review with Momus") {
       subagent_type: "momus",
       description: "Review plan for executability and blockers",
       prompt: `Review this plan: ${planPath}\n\n**你的职责**：你是计划审查者（Plan Reviewer），不是计划创建者。\n\n**请检查**：\n1. 计划的可执行性\n2. 引用的有效性\n3. 阻塞性问题\n4. 验收标准是否具体\n5. Agent-Executed QA Scenarios 是否完整\n\n**输出格式**：\n- Status: OKAY | REJECT\n- Blockers: [阻塞问题列表，如果有]\n- Notes: [审查意见]`,
-      task_id: shouldUseSubsession("momus") ? `momus-${currentSessionId}-${Date.now()}-${randomHex(8)}` : undefined,
+      task_id: undefined,
       timeout: 180000 // 3 分钟超时
     })
 
@@ -1078,7 +1094,7 @@ Object.entries(subagentStats).forEach(([agent, stats]) => {
 **Step Breakdown**:
 | Step | Time (s) | Status |
 |------|----------|--------|
-| step-1: 初始化 + Metis | {X.XX} | ✓ |
+| step-1: 初始化 + Metis 洞察| {X.XX} | ✓ |
 | step-2: 并行 Sub-Agent 执行分析 | {X.XX} | ✓ |
 | step-3: 生成计划 | {X.XX} | ✓ |
 | step-4: 用户决策 + Momus 审查 | {X.XX} | ✓ |
