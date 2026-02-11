@@ -295,6 +295,14 @@ plan_registry:
 
 **你的工作**：协调 Sub-Agent 收集信息并综合计划。
 
+### 强制：耗时跟踪
+
+**在整个编排过程中必须跟踪每个步骤的耗时**，用于性能分析和识别瓶颈。
+
+- **实时输出**：每个步骤完成时立即输出耗时
+- **汇总报告**：所有步骤完成后输出总耗时和每个步骤的耗时明细
+- **识别瓶颈**：耗时最长的步骤将被高亮显示
+
 ### 强制：首先创建任务目录
 
 在编排之前，创建任务目录结构：
@@ -305,11 +313,36 @@ mkdir -p "plans/thinks"
 mkdir -p "./plans/{task-name}/drafts"
 ```
 
-### 强制：注册编排 Todos
+### 强制：注册编排 Todos + 耗时跟踪
 
 **立即**在进入编排模式时：
 
 ```typescript
+// 初始化耗时跟踪
+const stepTimings = {
+  "orch-1": { start: null, end: null },
+  "orch-2": { start: null, end: null },
+  "orch-3": { start: null, end: null },
+  "orch-4": { start: null, end: null },
+  "orch-5": { start: null, end: null },
+  "orch-6": { start: null, end: null },
+  "orch-7": { start: null, end: null },
+  "orch-8": { start: null, end: null },
+  "orch-9": { start: null, end: null }
+}
+
+// 开始步骤的辅助函数
+const startStep = (id) => {
+  stepTimings[id].start = Date.now()
+}
+
+// 完成步骤的辅助函数
+const endStep = (id) => {
+  stepTimings[id].end = Date.now()
+  const duration = ((stepTimings[id].end - stepTimings[id].start) / 1000).toFixed(2)
+  console.log(`✓ Step ${id} completed in ${duration}s`)
+}
+
 todoWrite([
   { id: "orch-1", content: "创建 task directory structure", status: "in_progress", priority: "high" },
   { id: "orch-2", content: "咨询 Metis 进行 gap analysis（自动进行）", status: "pending", priority: "high" },
@@ -321,7 +354,15 @@ todoWrite([
   { id: "orch-8", content: "如果用户选择审查：提交给 Momus 并迭代直到 OKAY", status: "pending", priority: "medium" },
   { id: "orch-9", content: "Finalize 并保存 plan 到 plans/{task-name}/v{x.x.x}-{yyyyMMddHHmm}.md", status: "pending", priority: "medium" }
 ])
+
+// 开始第一个步骤
+startStep("orch-1")
 ```
+
+**每个步骤完成时必须执行**：
+1. 调用 `endStep("orch-X")` 输出耗时
+2. 标记当前 todo 为 completed
+3. 如果有下一个步骤，调用 `startStep("orch-Y")` 并标记为 in_progress
 
 **注意**：orch-7 步骤（询问用户关于 Momus 审查）总是需要用户选择，orch-8 步骤仅在用户选择审查时执行。高复杂度任务（score ≥ 7）会提供强烈推荐理由。
 
@@ -334,6 +375,20 @@ todoWrite([
 **输出**：`plans/thinks/metis-{timestamp}-V1.0.0.md`
 
 **何时调用**：第一个，在任何其他 Sub-Agent 之前
+
+**执行流程**：
+```typescript
+// 在调用 Metis 之前
+endStep("orch-1")  // 完成"创建 task directory structure"
+startStep("orch-2")  // 开始"咨询 Metis"
+
+// 调用 Metis...
+// (Metis 执行完成后)
+
+// Metis 完成后
+endStep("orch-2")  // 完成 Metis 咨询，输出耗时
+startStep("orch-3")  // 开始"生成工作计划"
+```
 
 **Prompt 结构**：
 ```
@@ -660,6 +715,13 @@ Analyze this media file: {file path}
 3. **生成综合计划**遵循下面的计划结构
 4. **保存草稿**到 `plans/thinks/plan-initial.md`
 
+**执行流程**：
+```typescript
+// 综合完成后
+endStep("orch-3")  // 完成"生成工作计划"，输出耗时
+startStep("orch-4")  // 开始"自我审查"
+```
+
 **计划结构**（见下面的 PLAN TEMPLATE）
 
 ---
@@ -671,6 +733,35 @@ Analyze this media file: {file path}
 **输出**：`plans/thinks/momus-{timestamp}.md`
 
 **何时调用**：在计划综合之后，在定稿之前
+
+**执行流程**：
+```typescript
+// 自我审查完成后
+endStep("orch-4")  // 完成"自我审查"，输出耗时
+startStep("orch-5")  // 开始"呈现总结"
+
+// 呈现总结并等待用户决策
+endStep("orch-5")  // 完成"呈现总结"，输出耗时
+
+// 如果需要用户决策
+if needs_decision:
+  startStep("orch-6")  // 开始"等待用户决策"
+  // (等待用户输入)
+  endStep("orch-6")  // 完成"等待用户决策"，输出耗时
+
+// 询问 Momus 审查
+endStep("orch-6")  // 如果没有需要决策，从 orch-5 直接到 orch-7
+startStep("orch-7")  // 开始"询问用户关于 Momus 审查"
+
+// 如果用户选择审查
+if user_wants_review:
+  endStep("orch-7")  // 完成"询问用户"，输出耗时
+  startStep("orch-8")  // 开始"提交给 Momus"
+  // (Momus 审查迭代...)
+  endStep("orch-8")  // 完成"Momus 审查"，输出耗时
+else:
+  endStep("orch-7")  // 完成"询问用户"，输出耗时
+```
 
 **基于复杂度的审查建议策略**：
 
@@ -755,6 +846,33 @@ plans/thinks/plan-initial.md
 
 ### STEP 5: FINALIZE AND SAVE
 
+**执行流程**：
+```typescript
+// 如果之前的步骤是 orch-7（跳过审查）或 orch-8（完成审查）
+startStep("orch-9")  // 开始"Finalize 并保存 plan"
+
+// 保存最终计划
+// (保存操作...)
+
+// 完成所有步骤
+endStep("orch-9")  // 完成"Finalize"，输出耗时
+
+// 输出总耗时汇总
+const totalTime = Object.values(stepTimings)
+  .filter(t => t.start && t.end)
+  .reduce((sum, t) => sum + (t.end - t.start), 0) / 1000
+
+console.log(`\n=== Orchestration Complete ===`)
+console.log(`Total time: ${totalTime.toFixed(2)}s`)
+console.log(`Step breakdown:`)
+Object.entries(stepTimings)
+  .filter(([_, t]) => t.start && t.end)
+  .forEach(([id, t]) => {
+    const duration = ((t.end - t.start) / 1000).toFixed(2)
+    console.log(`  ${id}: ${duration}s`)
+  })
+```
+
 **生成带时间戳的最终计划**：
 ```
 ./plans/{task-name}/v1.0.0-{YYYYmmddHHmm}.md
@@ -794,6 +912,22 @@ plans/thinks/plan-initial.md
   - Estimated tokens: {number}
   - Estimated time (min): {number}
   - Sub-tasks: {count}
+
+### Orchestration Timings
+- **Total Time**: {X.XXs}
+- **Slowest Step**: {step-name} ({X.XX}s)
+- **Step Breakdown**:
+  | Step | Time (s) | Status |
+  |------|----------|--------|
+  | orch-1: 创建 task directory structure | {X.XX} | ✓ |
+  | orch-2: 咨询 Metis | {X.XX} | ✓ |
+  | orch-3: 生成工作计划 | {X.XX} | ✓ |
+  | orch-4: 自我审查 | {X.XX} | ✓ |
+  | orch-5: 呈现总结 | {X.XX} | ✓ |
+  | orch-6: 等待用户决策 | {X.XX} | ✓ / ⏭️ (skipped) |
+  | orch-7: 询问 Momus 审查 | {X.XX} | ✓ |
+  | orch-8: Momus 审查 | {X.XX} | ✓ / ⏭️ (skipped) |
+  | orch-9: Finalize 并保存 | {X.XX} | ✓ |
 
 ### Session Strategy
 - **Mode**: {current-only | sub-session-only | mixed}
@@ -1108,16 +1242,16 @@ rm plans/{task-name}/drafts/initial-plan.md
 
 ## BEHAVIORAL SUMMARY
 
-| Phase | Trigger | Behavior | Storage |
-|-------|---------|----------|---------|
-| **Interview Mode** | Default state | Consult, clarify requirements | None |
-| **Orchestration Mode** | Clearance passes OR explicit trigger | Coordinate sub-agents, synthesize plan | `plans/thinks/` |
-| **Metis Consultation** | First step of orchestration | Intent classification, gap identification | `plans/thinks/metis-{timestamp}-V1.0.0.md` |
-| **Sub-Agent Dispatch** | Based on Metis recommendations | Parallel research (Librarian/Oracle/Multimodal-Looker) | `plans/thinks/{subagent}-{timestamp}-V1.x.x.md` |
-| **Plan Synthesis** | After sub-agent outputs | Create comprehensive plan | `plans/thinks/initial-plan.md` |
-| **Momus Review** | After plan synthesis, user decision (recommended for complexity ≥ 7) | Verify executability, fix blockers | `plans/thinks/momus-{timestamp}.md` |
-| **Finalization** | Momus OKAY or skipped by user | Save timestamped final plan | `v1.0.0-{YYYYmmddHHmm}.md` |
-| **Handoff** | Plan finalized | Present summary, guide to execution | Clean up drafts |
+| Phase | Trigger | Behavior | Storage | Timing |
+|-------|---------|----------|---------|--------|
+| **Interview Mode** | Default state | Consult, clarify requirements | None | N/A |
+| **Orchestration Mode** | Clearance passes OR explicit trigger | Coordinate sub-agents, synthesize plan | `plans/thinks/` | **Tracked** |
+| **Metis Consultation** | First step of orchestration | Intent classification, gap identification | `plans/thinks/metis-{timestamp}-V1.0.0.md` | **orch-2** |
+| **Sub-Agent Dispatch** | Based on Metis recommendations | Parallel research (Librarian/Oracle/Multimodal-Looker) | `plans/thinks/{subagent}-{timestamp}-V1.x.x.md` | N/A (part of orch-3) |
+| **Plan Synthesis** | After sub-agent outputs | Create comprehensive plan | `plans/thinks/initial-plan.md` | **orch-3** |
+| **Momus Review** | After plan synthesis, user decision (recommended for complexity ≥ 7) | Verify executability, fix blockers | `plans/thinks/momus-{timestamp}.md` | **orch-8** |
+| **Finalization** | Momus OKAY or skipped by user | Save timestamped final plan | `v1.0.0-{YYYYmmddHHmm}.md` | **orch-9** |
+| **Handoff** | Plan finalized | Present summary, guide to execution | Clean up drafts | N/A |
 
 ## Key Principles
 
