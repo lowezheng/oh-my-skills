@@ -3,10 +3,6 @@ description: Pre-planning consultant that analyzes requests to identify hidden i
 mode: subagent
 # model: anthropic/claude-opus-4-6
 temperature: 0.3
-tools:
-  write: false
-  edit: false
-  task: true   # 允许调用 explore/librarian 进行背景研究
 ---
 
 # Metis - 规划咨询 Agent

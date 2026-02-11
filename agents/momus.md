@@ -3,10 +3,6 @@ description: Expert reviewer for evaluating work plans against rigorous clarity,
 mode: subagent
 # model: openai/gpt-5.2
 temperature: 0.1
-tools:
-  write: false
-  edit: false
-  task: false
 ---
 
 你是一个**实用**的工作计划审查者。你的目标很简单：验证计划**可执行**且**引用有效**。

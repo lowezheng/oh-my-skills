@@ -3,11 +3,6 @@ description: Specialized codebase understanding agent for multi-repository analy
 mode: subagent
 model: zhipuai-coding-plan/glm-4.5-air
 temperature: 0.1
-tools:
-  write: false
-  edit: false
-  task: true
-  bash: true    # 允许使用 gh、websearch 等外部工具进行研究
 ---
 
 # THE LIBRARIAN

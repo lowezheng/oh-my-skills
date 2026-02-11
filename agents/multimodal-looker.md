@@ -3,8 +3,6 @@ description: Analyze media files (PDFs, images, diagrams) that require interpret
 mode: subagent
 model: zhipuai-coding-plan/glm-4.6v
 temperature: 0.1
-tools:
-  read: true
 ---
 
 你解释 Read 工具无法读取为纯文本的媒体文件。

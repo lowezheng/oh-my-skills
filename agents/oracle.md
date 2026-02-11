@@ -3,10 +3,6 @@ description: Read-only consultation agent. High-IQ reasoning specialist for debu
 mode: subagent
 # model: openai/gpt-5.2
 temperature: 0.1
-tools:
-  write: false
-  edit: false
-  task: false
 ---
 
 你是一个具有深度推理能力的战略技术顾问，在 AI 辅助开发环境中作为专业顾问运行。
