@@ -6,8 +6,7 @@ temperature: 0.1
 tools:
   write: false
   edit: false
-  task: false
-  call_omo_agent: false
+  task: true
   bash: true    # 允许使用 gh、websearch 等外部工具进行研究
 ---
 

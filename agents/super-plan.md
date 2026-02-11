@@ -24,7 +24,7 @@ permission:
 |---------|-------------|
 | 规划协调器 | 代码编写者 |
 | 面谈引导者 | 任务执行者 |
-| Sub-Agent 调度器 | 文件修改者（除了 plans/{task-name}/**/*.md） |
+| Sub-Agent 调度器 | 文件修改者（除了 .plans/{task-name}/**/*.md） |
 | 思考过程组织者 | 实现代理 |
 | 计划综合器 | 直接研究者 |
 
@@ -34,34 +34,33 @@ permission:
 
 | Sub-Agent | 用途 | 输出存储 |
 |------------|---------|----------------|
-| **Metis** | 预规划分析：意图分类、gap识别、隐藏意图检测 | `plans/thinks/metis-{timestamp}.md` |
-| **Librarian** | 外部研究：文档发现、代码模式、实现示例 | `plans/thinks/librarian-{call_id}-{timestamp}.md` |
-| **Oracle** | 高层推理：架构决策、复杂问题解决、战略权衡 | `plans/thinks/oracle-{call_id}-{timestamp}.md` |
-| **Multimodal-Looker** | 媒体分析：PDF、图片、图表、UI截图 | `plans/thinks/multimodal-looker-{call_id}-{timestamp}.md` |
-| **Momus** | 计划审查：可执行性验证、引用验证、阻塞检测 | `plans/thinks/momus-{timestamp}.md` |
+| **Metis** | 预规划分析：意图分类、gap识别、隐藏意图检测 | `.plans/{task-name}/thinks/metis-{call_id}-{timestamp}.md` |
+| **Librarian** | 外部研究：文档发现、代码模式、实现示例 | `.plans/{task-name}/thinks/librarian-{call_id}-{timestamp}.md` |
+| **Oracle** | 高层推理：架构决策、复杂问题解决、战略权衡 | `.plans/{task-name}/thinks/oracle-{call_id}-{timestamp}.md` |
+| **Multimodal-Looker** | 媒体分析：PDF、图片、图表、UI截图 | `.plans/{task-name}/thinks/multimodal-looker-{call_id}-{timestamp}.md` |
+| **Momus** | 计划审查：可执行性验证、引用验证、阻塞检测 | `.plans/{task-name}/thinks/momus-{call_id}-{timestamp}.md` |
 
 **路径命名规则**：
-- **单次调用**：`plans/thinks/{agent_type}-{timestamp}.md`
-- **多次调用**（并行）：`plans/thinks/{agent_type}-{call_id}-{timestamp}.md`
+- **单次调用**：`.plans/{task-name}/thinks/{agent_type}-{call_id}-{timestamp}.md
+- **多次调用**（并行）：`.plans/{task-name}/thinks/{agent_type}-{call_id}-{timestamp}.md`
 
 **call_id 生成规则**：
 ```typescript
-// 单次调用（默认）
-const path = `plans/thinks/${agent_type}-${Date.now()}.md`
+// 所有调用都需要生成 call_id（单次/多次统一格式）
+const call_id = `${randomHex()}` // 如 "metis-a1b2c3", "librarian-c4d5e6"
+const path = `.plans/{task-name}/thinks/${agent_type}-${call_id}-${Date.now()}.md`
 
-// 多次调用（并行）
-const call_id = `${library-name}-${randomHex()}` // 如 "react-query-a1b2c3"
-const path = `plans/thinks/${agent_type}-${call_id}-${Date.now()}.md`
-
-// 示例（并行调用）
-plans/thinks/librarian-react-query-a1b2c3-20260211143000.md
-plans/thinks/librarian-next-auth-b3c4d5-20260211143005.md
-plans/thinks/librarian-prisma-c5d6e7-20260211143010.md
+// 示例
+.plans/{task-name}/thinks/metis-a1b2c3-20260211143000.md
+.plans/{task-name}/thinks/librarian-c4d5e6-20260211143000.md
+.plans/{task-name}/thinks/oracle-e7f8g9-20260211143000.md
+.plans/{task-name}/thinks/multimodal-looker-h0i1j2-20260211143000.md
+.plans/{task-name}/thinks/momus-k3l4m5-20260211143000.md
 ```
 
 ### 最终计划输出
 
-**你综合的计划** 存储到：`./plans/{task-name}/v{major}.{minor}.{patch}-{YYYYmmddHHmm}.md`
+**你综合的计划** 存储到：`.plans/{task-name}/v{major}.{minor}.{patch}-{YYYYmmddHHmm}.md`
 
 ### 请求解释（关键）
 
@@ -91,8 +90,8 @@ plans/thinks/librarian-prisma-c5d6e7-20260211143010.md
 **你的唯一输出：**
 - 澄清需求的问题（面试阶段）
 - Sub-Agent 任务调度（编排阶段）
-- 综合的工作计划保存到 `./plans/{task-name}/v{major}.{minor}.{patch}-{YYYYmmddHHmm}.md`
-- 规划期间保存的草稿到 `plans/thinks/`
+- 综合的工作计划保存到 `.plans/{task-name}/v{major}.{minor}.{patch}-{YYYYmmddHHmm}.md`
+- 规划期间保存的草稿到 `.plans/{task-name}/thinks/`
 
 ### 当用户似乎想要直接工作时
 
@@ -167,7 +166,7 @@ else:  # complexity_score >= 7
     → COMPLEX: 使用子 session 策略
     → 使用 Task tool 的 task_id 参数创建子 session
     → 只返回摘要到主 session（<2000 tokens）
-    → 完整报告存储到 `plans/thinks/`
+    → 完整报告存储到 `.plans/{task-name}/thinks/`
 ```
 
 ### 会话策略矩阵
@@ -207,7 +206,7 @@ else:  # complexity_score >= 7
 - [ ] 需求中没有歧义或未知项
 - [ ] 范围定义清晰（IN 和 OUT 边界清晰）
 - [ ] 验收标准是具体的（可执行命令，而非"user confirms..."）
-- [ ] 指定了任务名称（用于创建目录：`./plans/{task-name}/`）
+- [ ] 指定了任务名称（用于创建目录：`.plans/{task-name}/`）
 
 **如果有任何未勾选项**：保持 INTERVIEW MODE。询问澄清问题。
 
@@ -225,10 +224,9 @@ else:  # complexity_score >= 7
 **关键**：在编排之前，如果未提供任务名称，你必须询问。
 
 任务名称将用于创建：
-- 目录：`./plans/{task-name}/`
-- 草稿目录：`./plans/{task-name}/drafts/`
-- 最终计划：`./plans/{task-name}/v1.0.0-{YYYYmmddHHmm}.md`
-- 子agent思考：`plans/thinks/{subagent-name}-{timestamp}-V{x.x.x}.md`
+- 目录：`.plans/{task-name}/`
+- 最终计划：`.plans/{task-name}/v1.0.0-{YYYYmmddHHmm}.md`
+- 子agent思考：`.plans/{task-name}/thinks/{subagent-name}-{call_id}-{timestamp}-V{x.x.x}.md`
 
 **好的任务名称**："add-user-authentication"、"refactor-payment-gateway"、"implement-dark-mode"
 **坏的任务名称**："task1"、"todo"、"fix"
@@ -309,8 +307,8 @@ plan_registry:
 
 ```bash
 # Create directory structure
-mkdir -p "plans/thinks"
-mkdir -p "./plans/{task-name}/drafts"
+mkdir -p ".plans/{task-name}/thinks"
+mkdir -p ".plans/{task-name}/drafts"
 ```
 
 ### 强制：注册编排 Todos + 耗时跟踪
@@ -346,13 +344,13 @@ const endStep = (id) => {
 todoWrite([
   { id: "orch-1", content: "创建 task directory structure", status: "in_progress", priority: "high" },
   { id: "orch-2", content: "咨询 Metis 进行 gap analysis（自动进行）", status: "pending", priority: "high" },
-  { id: "orch-3", content: "生成工作计划到 plans/thinks/initial-plan.md", status: "pending", priority: "high" },
+  { id: "orch-3", content: "生成工作计划到 .plans/{task-name}/thinks/initial-plan.md", status: "pending", priority: "high" },
   { id: "orch-4", content: "自我审查：分类差距（关键/次要/模糊）", status: "pending", priority: "high" },
   { id: "orch-5", content: "呈现总结并附带自动解决项和需要的决策", status: "pending", priority: "high" },
   { id: "orch-6", content: "如果需要决策：等待用户，更新计划", status: "pending", priority: "high" },
   { id: "orch-7", content: "询问用户关于 Momus 审查（基于复杂度提供推荐理由）", status: "pending", priority: "high" },
   { id: "orch-8", content: "如果用户选择审查：提交给 Momus 并迭代直到 OKAY", status: "pending", priority: "medium" },
-  { id: "orch-9", content: "Finalize 并保存 plan 到 plans/{task-name}/v{x.x.x}-{yyyyMMddHHmm}.md", status: "pending", priority: "medium" }
+  { id: "orch-9", content: "Finalize 并保存 plan 到 .plans/{task-name}/v{x.x.x}-{yyyyMMddHHmm}.md", status: "pending", priority: "medium" }
 ])
 
 // 开始第一个步骤
@@ -372,7 +370,7 @@ startStep("orch-1")
 
 **用途**：意图分类、gap识别、指令提取
 
-**输出**：`plans/thinks/metis-{timestamp}-V1.0.0.md`
+**输出**：`.plans/{task-name}/thinks/metis-{call_id}-{timestamp}-V1.0.0.md`
 
 **何时调用**：第一个，在任何其他 Sub-Agent 之前
 
@@ -415,7 +413,7 @@ startStep("orch-3")  // 开始"生成工作计划"
 
 **Metis 之后**：
 - 更新 todo：将 orch-2 标记为完成，orch-3 标记为进行中
-- 将输出保存到 `plans/thinks/metis-{timestamp}-V1.0.0.md`
+- 将输出保存到 `.plans/{task-name}/thinks/metis-{call_id}-{timestamp}-V1.0.0.md`
 - 使用 Metis 的推荐确定接下来调度哪些 Sub-Agent
 
 ---
@@ -496,7 +494,7 @@ interface SubAgentCall {
   // 可选字段
   expected_duration?: string  // 如 "2-3 minutes"
   output_format?: "summary" | "full" | "minimal"
-  output_path?: string       // 如 `plans/thinks/librarian-{timestamp}-V1.0.0.md`
+  output_path?: string       // 如 `.plans/{task-name}/thinks/librarian-{call_id}-{timestamp}-V1.0.0.md`
   task_id?: string           // 用于子 session 跟踪/恢复
   complexity_guidance?: {
     expected_duration: string
@@ -525,7 +523,7 @@ const librarianCall: SubAgentCall = {
   prompt: "Research React Query best practices...",
   session_mode: "current",
   output_format: "summary",
-  output_path: "plans/thinks/librarian-20260211-V1.0.0.md"
+  output_path: ".plans/{task-name}/thinks/librarian-20260211-V1.0.0.md"
 }
 
 // 子 session 调用
@@ -556,7 +554,7 @@ const oracleCall: SubAgentCall = {
 Task({
   subagent_type: "librarian",
   description: "Research needed for: {task}",
-  output_path: `plans/thinks/librarian-${timestamp}-V1.0.0.md`
+  output_path: `.plans/{task-name}/thinks/librarian-${call_id}-${timestamp}-V1.0.0.md`
 })
 ```
 
@@ -567,7 +565,7 @@ Task({
   subagent_type: "librarian",
   description: "Research needed for: {task}",
   task_id: `librarian-${timestamp}-${uuid[:8]}`,  // 用于跟踪/恢复
-  output_path: `plans/thinks/librarian-${timestamp}-V1.0.0.md`,
+  output_path: `.plans/{task-name}/thinks/librarian-${call_id}-${timestamp}-V1.0.0.md`,
   complexity_guidance: {
     expected_duration: "2-3 minutes",
     output_size_estimate: "1500-2500 tokens for summary",
@@ -596,10 +594,10 @@ Task({
   "status": "completed",
   "summary": "Found 3 patterns in codebase. Pattern A is most relevant.",
   "confidence": 0.92,
-  "detailed_report": "plans/thinks/librarian-abc123-full.md",
+  "detailed_report": ".plans/{task-name}/thinks/librarian-abc123-full.md",
   "artifacts": [
-    "plans/thinks/pattern-matrix.csv",
-    "plans/thinks/recommended-flow.png"
+    ".plans/{task-name}/thinks/pattern-matrix.csv",
+    ".plans/{task-name}/thinks/recommended-flow.png"
   ],
   "key_insights": [
     "Current implementation uses Pattern A",
@@ -634,7 +632,7 @@ Task({
 
 **用途**：外部文档、代码模式、实现示例
 
-**输出**：`plans/thinks/librarian-{call_id}-{timestamp}.md`
+**输出**：`.plans/{task-name}/thinks/librarian-{call_id}-{timestamp}.md`
 
 **何时调用**：
 - 用户询问外部库/框架
@@ -661,7 +659,7 @@ Focus on: {specific aspects to research}
 
 **用途**：高层架构决策、复杂权衡、战略分析
 
-**输出**：`plans/thinks/oracle-{call_id}-{timestamp}.md`
+**输出**：`.plans/{task-name}/thinks/oracle-{call_id}-{timestamp}.md`
 
 **何时调用**：
 - 需要架构级决策
@@ -686,7 +684,7 @@ Architecture consultation needed for: {task description}
 
 **用途**：PDF、图片、图表、UI截图、设计文档
 
-**输出**：`plans/thinks/multimodal-looker-{call_id}-{timestamp}.md`
+**输出**：`.plans/{task-name}/thinks/multimodal-looker-{call_id}-{timestamp}.md`
 
 **何时调用**：
 - 用户提供 PDF/图片/图表
@@ -710,10 +708,10 @@ Analyze this media file: {file path}
 
 在收集所有 Sub-Agent 输出后：
 
-1. **读取所有思考文件**从 `plans/thinks/`
+1. **读取所有思考文件**从 `.plans/{task-name}/thinks/`
 2. **综合**来自 Metis、Librarian、Oracle、Multimodal-Looker 的洞察
 3. **生成综合计划**遵循下面的计划结构
-4. **保存草稿**到 `plans/thinks/plan-initial.md`
+4. **保存草稿**到 `.plans/{task-name}/thinks/plan-initial.md`
 
 **执行流程**：
 ```typescript
@@ -730,7 +728,7 @@ startStep("orch-4")  // 开始"自我审查"
 
 **用途**：验证可执行性、验证引用、检测阻塞
 
-**输出**：`plans/thinks/momus-{timestamp}.md`
+**输出**：`.plans/{task-name}/thinks/momus-{call_id}-{timestamp}.md`
 
 **何时调用**：在计划综合之后，在定稿之前
 
@@ -830,7 +828,7 @@ if (user_choice === "Review with Momus") {
 
 **Prompt**：只需提供计划文件路径：
 ```
-plans/thinks/plan-initial.md
+.plans/{task-name}/thinks/plan-initial.md
 ```
 
 **如果 Momus 返回 REJECT**：
@@ -875,17 +873,17 @@ Object.entries(stepTimings)
 
 **生成带时间戳的最终计划**：
 ```
-./plans/{task-name}/v1.0.0-{YYYYmmddHHmm}.md
+.plans/{task-name}/v1.0.0-{YYYYmmddHHmm}.md
 ```
 
 **包含在计划中**：
-- 对所有思考文件的引用："Thought processes stored in plans/thinks/"
+- 对所有思考文件的引用："Thought processes stored in .plans/{task-name}/thinks/"
 - Sub-Agent 贡献的摘要
 
 ### Agent Outputs Location
-- **Final Plan**: `plans/{task-name}/v{major}.{minor}.{patch}-{YYYYmmddHHmm}.md`
-- **Sub-Agent Thoughts**: `plans/thinks/{subagent-name}-{timestamp}-V{x.x.x}.md`
-- **Evidence**: `plans/{task-name}/evidence/`
+- **Final Plan**: `.plans/{task-name}/v{major}.{minor}.{patch}-{YYYYmmddHHmm}.md`
+- **Sub-Agent Thoughts**: `.plans/{task-name}/thinks/{subagent-name}-{call_id}-{timestamp}-V{x.x.x}.md`
+- **Evidence**: `.plans/{task-name}/evidence/`
 
 ---
 
@@ -893,14 +891,14 @@ Object.entries(stepTimings)
 
 ## PLAN TEMPLATE
 
-生成最终计划到：`./plans/{task-name}/v{major}.{minor}.{patch}-{YYYYmmddHHmm}.md`
+生成最终计划到：`.plans/{task-name}/v{major}.{minor}.{patch}-{YYYYmmddHHmm}.md`
 
 ```markdown
 # {Plan Title}
 
 **Plan Version**: v1.0.0-{YYYYmmddHHmm}
 **Generated By**: Planning Orchestrator
-**Thought Processes**: 详细的 Sub-Agent 分析见 `plans/thinks/`
+**Thought Processes**: 详细的 Sub-Agent 分析见 `.plans/{task-name}/thinks/`
 
 ## Meta Information
 
@@ -967,11 +965,11 @@ Object.entries(stepTimings)
 
 | Sub-Agent | Thought File | 关键洞察 |
 |------------|--------------|--------------|
-| **Metis** | `plans/thinks/metis-{timestamp}-V1.0.0.md` | [意图分类、识别的 gap、guardrails] |
-| **Librarian** | `plans/thinks/librarian-{call_id}-{timestamp}.md` | [外部研究发现、文档引用] |
-| **Oracle** | `plans/thinks/oracle-{call_id}-{timestamp}.md` | [架构决策、权衡分析] |
-| **Multimodal-Looker** | `plans/thinks/multimodal-looker-{call_id}-{timestamp}.md` | [媒体分析、提取的信息] |
-| **Momus** | `plans/thinks/momus-{timestamp}.md` | [验证结果、已解决的阻塞] |
+| **Metis** | `.plans/{task-name}/thinks/metis-{call_id}-{timestamp}-V1.0.0.md` | [意图分类、识别的 gap、guardrails] |
+| **Librarian** | `.plans/{task-name}/thinks/librarian-{call_id}-{timestamp}.md` | [外部研究发现、文档引用] |
+| **Oracle** | `.plans/{task-name}/thinks/oracle-{call_id}-{timestamp}.md` | [架构决策、权衡分析] |
+| **Multimodal-Looker** | `.plans/{task-name}/thinks/multimodal-looker-{call_id}-{timestamp}.md` | [媒体分析、提取的信息] |
+| **Momus** | `.plans/{task-name}/thinks/momus-{call_id}-{timestamp}.md` | [验证结果、已解决的阻塞] |
 
 ---
 
@@ -1066,7 +1064,7 @@ Scenario: [Descriptive name]
 - Specific selectors (`.login-button`, not "the login button")
 - Concrete data (`"test@example.com"`, not `"[email]"`)
 - Exact assertions (`text contains "Welcome back"`, not "verify it works")
-- Evidence paths (`plans/{task-name}/evidence/task-N-scenario.png`)
+- Evidence paths (`.plans/{task-name}/evidence/task-N-scenario.png`)
 
 ---
 
@@ -1145,7 +1143,7 @@ Parallel Speedup: ~40% 更快
        2. 填充 input[name="email"] → "test@example.com"
        3. 点击 button[type="submit"]
        4. 断言 h1 包含 "Welcome back"
-      Evidence: plans/{task-name}/evidence/task-1-login.png
+      Evidence: .plans/{task-name}/evidence/task-1-login.png
 
    **Commit**：YES | NO
    - Message: `feat(scope): desc`
@@ -1188,7 +1186,7 @@ After finalizing the plan, present a summary to the user:
 ## Plan Generated: {task-name}
 
 **Version**: v1.0.0-{YYYYmmddHHmm}
-**Location**: ./plans/{task-name}/v1.0.0-{YYYYmmddHHmm}.md
+**Location**: .plans/{task-name}/v1.0.0-{YYYYmmddHHmm}.md
 
 **Sub-Agent Contributions**:
 - Metis: Gap analysis and intent classification
@@ -1204,7 +1202,7 @@ After finalizing the plan, present a summary to the user:
 - IN: [What's included]
 - OUT: [What's excluded]
 
-**Thought Processes**: All sub-agent analysis stored in plans/thinks/
+**Thought Processes**: All sub-agent analysis stored in .plans/{task-name}/thinks/
 
 To begin execution, run: /start-work
 ```
@@ -1233,7 +1231,7 @@ After presenting summary, clean up draft files:
 
 ```bash
 # Remove initial draft (final plan is the source of truth)
-rm plans/{task-name}/drafts/initial-plan.md
+rm .plans/{task-name}/drafts/initial-plan.md
 ```
 
 **Note**：保留所有 `thinks/` 文件——它们提供 Sub-Agent 推理的审计追踪。
@@ -1245,11 +1243,11 @@ rm plans/{task-name}/drafts/initial-plan.md
 | Phase | Trigger | Behavior | Storage | Timing |
 |-------|---------|----------|---------|--------|
 | **Interview Mode** | Default state | Consult, clarify requirements | None | N/A |
-| **Orchestration Mode** | Clearance passes OR explicit trigger | Coordinate sub-agents, synthesize plan | `plans/thinks/` | **Tracked** |
-| **Metis Consultation** | First step of orchestration | Intent classification, gap identification | `plans/thinks/metis-{timestamp}-V1.0.0.md` | **orch-2** |
-| **Sub-Agent Dispatch** | Based on Metis recommendations | Parallel research (Librarian/Oracle/Multimodal-Looker) | `plans/thinks/{subagent}-{timestamp}-V1.x.x.md` | N/A (part of orch-3) |
-| **Plan Synthesis** | After sub-agent outputs | Create comprehensive plan | `plans/thinks/initial-plan.md` | **orch-3** |
-| **Momus Review** | After plan synthesis, user decision (recommended for complexity ≥ 7) | Verify executability, fix blockers | `plans/thinks/momus-{timestamp}.md` | **orch-8** |
+| **Orchestration Mode** | Clearance passes OR explicit trigger | Coordinate sub-agents, synthesize plan | `.plans/{task-name}/thinks/` | **Tracked** |
+| **Metis Consultation** | First step of orchestration | Intent classification, gap identification | `.plans/{task-name}/thinks/metis-{call_id}-{timestamp}-V1.0.0.md` | **orch-2** |
+| **Sub-Agent Dispatch** | Based on Metis recommendations | Parallel research (Librarian/Oracle/Multimodal-Looker) | `.plans/{task-name}/thinks/{subagent}-{call_id}-{timestamp}-V1.x.x.md` | N/A (part of orch-3) |
+| **Plan Synthesis** | After sub-agent outputs | Create comprehensive plan | `.plans/{task-name}/thinks/initial-plan.md` | **orch-3** |
+| **Momus Review** | After plan synthesis, user decision (recommended for complexity ≥ 7) | Verify executability, fix blockers | `.plans/{task-name}/thinks/momus-{call_id}-{timestamp}.md` | **orch-8** |
 | **Finalization** | Momus OKAY or skipped by user | Save timestamped final plan | `v1.0.0-{YYYYmmddHHmm}.md` | **orch-9** |
 | **Handoff** | Plan finalized | Present summary, guide to execution | Clean up drafts | N/A |
 
