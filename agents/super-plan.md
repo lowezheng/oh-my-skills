@@ -52,17 +52,33 @@ permission:
 
 **call_id 生成规则**：
 ```typescript
-// 所有调用都需要生成 call_id（单次/多次统一格式）
-const call_id = `${randomHex()}` // 如 "metis-a1b2c3", "librarian-c4d5e6"
-const path = `.plans/{task-name}/thinks/${agent_type}-${call_id}-${Date.now()}.md`
+// call_id 优先使用 sub agent 的 session_id，否则使用当前 session id
+// 文件名格式：{agent_type}-{call_id}-{timestamp}.md
+// call_id 必须是 session_id（不含时间戳），用于中断回溯
+const result = await Task({ ... })
+const session_id = result.task_id || result.session_id || "current-session"
+const call_id = session_id
+const timestamp = Date.now()
+const path = `.plans/{task-name}/thinks/${agent_type}-${call_id}-${timestamp}.md`
 
 // 示例
-.plans/{task-name}/thinks/metis-a1b2c3-20260211143000.md
-.plans/{task-name}/thinks/librarian-c4d5e6-20260211143000.md
-.plans/{task-name}/thinks/oracle-e7f8g9-20260211143000.md
-.plans/{task-name}/thinks/multimodal-looker-h0i1j2-20260211143000.md
-.plans/{task-name}/thinks/momus-k3l4m5-20260211143000.md
+// 使用 sub session 时：.plans/{task-name}/thinks/metis-librarian-session-id-12345-1739234567890.md
+// 使用当前 session 时：.plans/{task-name}/thinks/oracle-current-session-1739234567890.md
+
+// 恢复时通过 call_id 查找所有相关文件
+const agentFiles = glob.sync(`.plans/${taskName}/thinks/${agent_type}-${call_id}-*.md`)
+// 按时间戳排序，取最新的
+const latestFile = agentFiles.sort().pop()
 ```
+
+**中断回溯机制**：
+- 所有 Sub-Agent 的输出文件名都包含对应的 session_id
+- 推理过程被人工/异常中断后，可以通过文件名中的 session_id 回溯状态
+- 使用 session_id 作为 call_id 可以：
+  - 精确定位每个 Sub-Agent 的执行状态
+  - 支持从中断点继续执行
+  - 保留完整的部署数据和推理过程
+  - 便于问题诊断和调试
 
 ### 最终计划输出
 
@@ -123,6 +139,34 @@ const path = `.plans/{task-name}/thinks/${agent_type}-${call_id}-${Date.now()}.m
 
 ---
 
+## 会话恢复策略（中断回溯）
+
+当推理过程被人工或异常中断时，可以通过保存的 session_id 恢复执行：
+
+```typescript
+// 从文件中读取已保存的 session_id
+const savedSessionIds = {
+  metis: "metis-abc123-1739234567890",
+  librarian: "librarian-def456-1739234578901",
+  oracle: "oracle-ghi789-1739234589012"
+}
+
+// 恢复时使用相同的 session_id 继续执行
+Task({
+  subagent_type: "oracle",
+  task_id: savedSessionIds.oracle,  // 使用已保存的 session_id
+  prompt: "继续之前的分析..."
+})
+```
+
+**恢复步骤**：
+1. 从 `.plans/{task-name}/thinks/` 目录读取已存在的思考文件
+2. 从文件名中提取 session_id（格式：`{agent_type}-{session_id}-{timestamp}.md`）
+3. 使用相同的 session_id 继续调用对应的 Sub-Agent
+4. 新的输出将追加到相同的 session 中，保持连贯性
+
+---
+
 ## PHASE 0: COMPLEXITY ASSESSMENT（MANDATORY FIRST STEP）
 
 **在进入 INTERVIEW MODE 之前，先执行快速复杂度评估。**
@@ -144,6 +188,27 @@ complexity_score = (
 |------|---------|------|--------|
 | **num_subtasks** | 需要的独立子任务数量 | 1.0 | 1-10 |
 | **needs_research** | 是否需要外部研究/API 查询 | 2.5 | 0 (否) / 1 (是) |
+
+**复杂度分类阈值（使用数学区间明确边界）**：
+
+```typescript
+function getComplexityLevel(score) {
+  // 使用 < 和 >= 确保无重叠且无空隙
+  if (score < 3) {
+    return "Simple"
+  } else if (score >= 3 && score < 6) {
+    return "Moderate"
+  } else {
+    return "Complex"
+  }
+}
+
+// 示例：
+// score = 2.99 → Simple
+// score = 3.00 → Moderate
+// score = 5.99 → Moderate
+// score = 6.00 → Complex
+```
 
 ### 会话策略决策（预计算）
 
@@ -172,6 +237,24 @@ else:  # complexity_score >= 6
 | **Simple** (<3) | Current | Current | Current | Current | Current |
 | **Moderate** (3-6) | Current | **Sub** | **Sub** | Current | Current |
 | **Complex** (≥6) | Current | **Sub** | **Sub** | **Sub** | **Sub** |
+
+**会话策略函数实现**：
+```typescript
+function getSessionStrategy(complexityScore) {
+  if (complexityScore < 3) {
+    return { metis: "current", librarian: "current", oracle: "current", multimodal: "current", momus: "current" }
+  } else if (complexityScore < 6) {
+    return { metis: "current", librarian: "sub", oracle: "sub", multimodal: "current", momus: "current" }
+  } else {
+    return { metis: "current", librarian: "sub", oracle: "sub", multimodal: "sub", momus: "sub" }
+  }
+}
+
+function shouldUseSubsession(agentType) {
+  const strategy = getSessionStrategy(complexity_score)
+  return strategy[agentType] === "sub"
+}
+```
 
 ---
 
@@ -272,6 +355,12 @@ const stepTimings = {
   "step-5": { name: "Finalize", start: null, end: null, duration: null }
 }
 
+// 2.1 初始化全局 call_id holder（跨步骤共享）
+let librarianCallIdHolder = null
+let oracleCallIdHolder = null
+let multimodalCallIdHolder = null
+let momusCallIdHolder = null
+
 // 3. 初始化 Sub-Agent 统计
 const subagentStats = {
   "metis": { calls: 0, totalTime: 0 },
@@ -291,7 +380,34 @@ todowrite([
   { id: "step-5", content: "Finalize", status: "pending", priority: "medium" }
 ])
 
-// 5. 开始第一个步骤
+// 5. 辅助函数：步骤时间管理
+const startStep = (id) => {
+  stepTimings[id].start = Date.now()
+}
+
+const endStep = (id) => {
+  stepTimings[id].end = Date.now()
+  const duration = ((stepTimings[id].end - stepTimings[id].start) / 1000).toFixed(2)
+  stepTimings[id].duration = duration
+  console.log(`✅ ${id}: ${stepTimings[id].name} (${duration}s)`)
+
+  // 更新 todo 状态
+  const todoIndex = todos.findIndex(t => t.id === id)
+  if (todoIndex !== -1) {
+    todos[todoIndex].status = "completed"
+
+    // 标记下一步为 in_progress
+    const nextStepId = `step-${parseInt(id.split('-')[1]) + 1}`
+    const nextTodoIndex = todos.findIndex(t => t.id === nextStepId)
+    if (nextTodoIndex !== -1) {
+      todos[nextTodoIndex].status = "in_progress"
+    }
+
+    todowrite(todos)
+  }
+}
+
+// 6. 开始第一个步骤
 startStep("step-1")
 ```
 
@@ -311,6 +427,41 @@ startStep("step-1")
 | Oracle | 5 分钟 | 超时后终止，标记架构分析为"部分完成" |
 | Multimodal-Looker | 5 分钟 | 超时后终止，标记媒体分析为"失败" |
 | Momus | 3 分钟 | 超时后终止，接受当前计划状态 |
+
+**超时处理实现**：
+```typescript
+// 包装 Task 调用以处理超时
+async function callAgentWithTimeout(agentType, taskConfig, timeoutMs, fallbackOutput) {
+  const startTime = Date.now()
+
+  try {
+    const result = await Promise.race([
+      Task(taskConfig),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("TIMEOUT")), timeoutMs)
+      )
+    ])
+    return { success: true, result }
+  } catch (error) {
+    if (error.message === "TIMEOUT") {
+      const duration = ((Date.now() - startTime) / 1000).toFixed(2)
+      console.log(`⚠️ ${agentType} timed out after ${duration}s, using fallback`)
+      subagentStats[agentType].calls += 1
+      subagentStats[agentType].totalTime += parseFloat(duration)
+      return { success: false, fallback: fallbackOutput }
+    }
+    throw error
+  }
+}
+
+// 使用示例
+const metisResult = await callAgentWithTimeout(
+  "metis",
+  { subagent_type: "metis", ... },
+  120000, // 2 分钟
+  { intent_type: "Build", recommended_agents: [] } // 默认值
+)
+```
 
 ### 简化编排流程（5步）
 
@@ -380,7 +531,7 @@ startStep("step-1")
 
 **用途**：创建任务目录 + 意图分类、gap识别、指令提取
 
-**输出**：`.plans/{task-name}/thinks/metis-{call_id}-{timestamp}-V1.0.0.md`
+**输出**：`.plans/{task-name}/thinks/metis-{call_id}-{timestamp}.md`
 
 **执行流程**：
 ```typescript
@@ -388,12 +539,16 @@ startStep("step-1")
 mkdir -p ".plans/{task-name}/thinks"
 
 // 2. 调用 Metis（2分钟超时）
-Task({
+const metisResult = await Task({
   subagent_type: "metis",
   description: "Gap analysis for: {task}",
-  prompt: "在编排之前审查此规划请求：\n\n**用户的请求**：{user's initial request}\n\n**面试总结**：{key points from interview}\n\n**当前理解**：{your interpretation}\n\n请提供：\n1. 意图分类\n2. 应该问但没问的问题\n3. 需要设置的 Guardrails\n4. 潜在的范围蔓延区域\n5. 需要验证的假设\n6. 缺失的验收标准\n7. 推荐调度的 Sub-Agent（及原因）\n8. 计划生成的指令",
-  output_path: `.plans/{task-name}/thinks/metis-{call_id}-${Date.now()}-V1.0.0.md`
+  prompt: "在编排之前审查此规划请求：\n\n**用户的请求**：{user's initial request}\n\n**面试总结**：{key points from interview}\n\n**当前理解**：{your interpretation}\n\n请提供：\n1. 意图分类\n2. 应该问但没问的问题\n3. 需要设置的 Guardrails\n4. 潜在的范围蔓延区域\n5. 需要验证的假设\n6. 缺失的验收标准\n7. 推荐调度的 Sub-Agent（及原因）\n8. 计划生成的指令"
 })
+
+// 使用 session_id 作为 call_id
+const metisCallId = metisResult.task_id || metisResult.session_id || "current-session"
+const metisOutputPath = `.plans/${taskName}/thinks/metis-${metisCallId}-${Date.now()}.md`
+// 保存 Metis 输出到文件...
 
 // 3. 完成 step-1
 endStep("step-1")
@@ -401,23 +556,68 @@ startStep("step-2")
 ```
 
 **Metis 之后**：
-- 保存输出到 `.plans/{task-name}/thinks/metis-{call_id}-{timestamp}-V1.0.0.md`
+- 保存输出到 `.plans/{task-name}/thinks/metis-{call_id}-{timestamp}.md`
 - 根据预定义策略确定哪些 Sub-Agent 使用子 session（见 PHASE 0）
-- 准备并行调用清单
+- **解析 Metis 输出确定需要调用的 Sub-Agent**
 
----
-
-### Oracle 咨询强制检查
-
-**时机**：在 STEP 2 之前，Metis 之后立即执行
-
-**目的**：确保 Architecture 意图必须经过 Oracle 审查
-
+**Sub-Agent 调用决策逻辑**：
 ```typescript
-// Metis 之后，在 STEP 2 之前
-if metis_output.intent_type == "Architecture":
-    if "oracle" not in planned_dispatch:
-        throw new Error("Architecture intent REQUIRES Oracle consultation per Metis recommendation")
+// 辅助函数：解析 Metis 输出
+function parseMetisOutput(metisOutput) {
+  const text = metisOutput.output || metisOutput || ""
+
+  // 解析意图类型
+  const intentMatch = text.match(/Intent Type[:\s]+([^\n]+)/i)
+  const intent_type = intentMatch ? intentMatch[1].trim() : "Build"
+
+  // 解析推荐的 Sub-Agent
+  const recommendedMatch = text.match(/推荐调度的 Sub-Agent[:\s]+([^\n]+)/i)
+  const recommendedAgents = recommendedMatch
+    ? recommendedMatch[1].split(/[、,]/).map(a => a.trim())
+    : []
+
+  // 检查是否需要外部研究
+  const needsExternalResearch =
+    /外部研究|documentation|官方文档/i.test(text) ||
+    /needs_external_research/i.test(text)
+
+  // 检查是否有媒体文件
+  const hasMediaFiles =
+    /PDF|图片|图表|截图|image|screenshot/i.test(text) ||
+    /has_media_files/i.test(text)
+
+  return {
+    intent_type,
+    recommended_agents: recommendedAgents,
+    needs_external_research: needsExternalResearch,
+    has_media_files: hasMediaFiles
+  }
+}
+
+// 解析 Metis 输出获取推荐调用的 Sub-Agent
+const metisOutput = read(`.plans/${taskName}/thinks/metis-${metisCallId}-*.md`)
+
+// 从 Metis 输出中提取推荐
+const metisRecommendations = parseMetisOutput(metisOutput)
+
+// 根据推荐确定是否调用各个 Sub-Agent
+const needsLibrarian = metisRecommendations.recommended_agents.includes("librarian") ||
+                       metisRecommendations.recommended_agents.includes("Librarian") ||
+                       metisRecommendations.needs_external_research === true
+
+const needsOracle = metisRecommendations.recommended_agents.includes("oracle") ||
+                    metisRecommendations.recommended_agents.includes("Oracle") ||
+                    metisRecommendations.intent_type === "Architecture" ||
+                    metisRecommendations.intent_type.includes("Architecture")
+
+const needsMultimodal = metisRecommendations.recommended_agents.includes("multimodal-looker") ||
+                        metisRecommendations.recommended_agents.includes("Multimodal") ||
+                        metisRecommendations.has_media_files === true
+
+// ⚠️ Oracle 咨询强制检查：Architecture 类型必须调用 Oracle
+if (metisRecommendations.intent_type === "Architecture" && !needsOracle) {
+  throw new Error("Architecture intent REQUIRES Oracle consultation per agent specification")
+}
 ```
 
 ---
@@ -452,52 +652,116 @@ const recordAgentCall = (agentType, startTime, endTime) => {
   console.log(`📊 ${agentType}: Call #${subagentStats[agentType].calls} (${duration.toFixed(2)}s)`)
 }
 
+// 辅助函数：带超时的单个调用包装
+async function callAgentWithTimeout(agentType, taskConfig, timeoutMs, fallback) {
+  const startTime = Date.now()
+  try {
+    const result = await Promise.race([
+      Task(taskConfig),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("TIMEOUT")), timeoutMs)
+      )
+    ])
+
+    recordAgentCall(agentType, startTime, Date.now())
+    return { success: true, result }
+  } catch (error) {
+    const duration = ((Date.now() - startTime) / 1000).toFixed(2)
+    subagentStats[agentType].calls += 1
+    subagentStats[agentType].totalTime += parseFloat(duration)
+    console.log(`⚠️ ${agentType} timed out after ${duration}s`)
+
+    if (fallback) {
+      // 保存 fallback 输出
+      const fallbackCallId = "timeout-fallback"
+      write(`.plans/${taskName}/thinks/${agentType}-${fallbackCallId}-${Date.now()}.md`,
+            `# ${agentType} Timed Out\n\n**Fallback Output**:\n${JSON.stringify(fallback, null, 2)}`)
+      return { success: false, fallback }
+    }
+    throw error
+  }
+}
+
 if (needsLibrarian) {
   const startTime = Date.now()
-  calls.push(Task({
+  const taskConfig = {
     subagent_type: "librarian",
     description: `Research for: ${task}`,
     prompt: `Research needed for: ${task}\n\n**需求上下文**：${interviewSummary}\n\n请提供：\n1. 官方文档链接\n2. 实现模式\n3. 最佳实践`,
-    task_id: shouldUseSubsession("librarian") ? `librarian-${Date.now()}-${randomHex(8)}` : undefined,
-    output_path: `.plans/${taskName}/thinks/librarian-${call_id}-${Date.now()}-V1.0.0.md`
-  }).then(result => {
-    recordAgentCall("librarian", startTime, Date.now())
-    return result
+    task_id: shouldUseSubsession("librarian") ? `librarian-${Date.now()}-${randomHex(8)}` : undefined
+  }
+
+  calls.push(callAgentWithTimeout("librarian", taskConfig, 300000, {
+    recommended_agents: ["librarian"],
+    notes: "Partial research due to timeout"
+  }).then(({ success, result, fallback }) => {
+    if (success) {
+      const librarianCallId = result.task_id || result.session_id || "current-session"
+      librarianCallIdHolder = librarianCallId // 保存 call_id 用于后续引用
+      write(`.plans/${taskName}/thinks/librarian-${librarianCallId}-${Date.now()}.md`, result.output || JSON.stringify(result))
+    } else {
+      librarianCallIdHolder = "timeout-fallback"
+    }
+    return { success, result, fallback }
   }))
 }
 
 if (needsOracle) {
   const startTime = Date.now()
-  calls.push(Task({
+  const taskConfig = {
     subagent_type: "oracle",
     description: `Architecture consultation for: ${task}`,
     prompt: `Architecture consultation needed for: ${task}\n\n**当前上下文**：${contextSummary}`,
-    task_id: shouldUseSubsession("oracle") ? `oracle-${Date.now()}-${randomHex(8)}` : undefined,
-    output_path: `.plans/${taskName}/thinks/oracle-${call_id}-${Date.now()}-V1.0.0.md`
-  }).then(result => {
-    recordAgentCall("oracle", startTime, Date.now())
-    return result
+    task_id: shouldUseSubsession("oracle") ? `oracle-${Date.now()}-${randomHex(8)}` : undefined
+  }
+
+  calls.push(callAgentWithTimeout("oracle", taskConfig, 300000, {
+    recommended_agents: ["oracle"],
+    notes: "Partial architecture analysis due to timeout"
+  }).then(({ success, result, fallback }) => {
+    if (success) {
+      const oracleCallId = result.task_id || result.session_id || "current-session"
+      oracleCallIdHolder = oracleCallId
+      write(`.plans/${taskName}/thinks/oracle-${oracleCallId}-${Date.now()}.md`, result.output || JSON.stringify(result))
+    } else {
+      oracleCallIdHolder = "timeout-fallback"
+    }
+    return { success, result, fallback }
   }))
 }
 
 if (needsMultimodal) {
   const startTime = Date.now()
-  calls.push(Task({
+  const taskConfig = {
     subagent_type: "multimodal-looker",
     description: `Media analysis for: ${task}`,
     prompt: `Analyze media files for: ${task}\n\n**任务上下文**：${interviewSummary}`,
-    task_id: shouldUseSubsession("multimodal") ? `multimodal-${Date.now()}-${randomHex(8)}` : undefined,
-    output_path: `.plans/${taskName}/thinks/multimodal-looker-${call_id}-${Date.now()}-V1.0.0.md`
-  }).then(result => {
-    recordAgentCall("multimodal-looker", startTime, Date.now())
-    return result
+    task_id: shouldUseSubsession("multimodal") ? `multimodal-${Date.now()}-${randomHex(8)}` : undefined
+  }
+
+  calls.push(callAgentWithTimeout("multimodal-looker", taskConfig, 300000, {
+    recommended_agents: ["multimodal-looker"],
+    notes: "Media analysis failed due to timeout"
+  }).then(({ success, result, fallback }) => {
+    if (success) {
+      const multimodalCallId = result.task_id || result.session_id || "current-session"
+      multimodalCallIdHolder = multimodalCallId
+      write(`.plans/${taskName}/thinks/multimodal-looker-${multimodalCallId}-${Date.now()}.md`, result.output || JSON.stringify(result))
+    } else {
+      multimodalCallIdHolder = "timeout-fallback"
+    }
+    return { success, result, fallback }
   }))
 }
 
 // ⚠️ 不要在这里调用 Momus！Momus 将在 STEP 4 调用
 
-// 等待所有调用完成（5分钟超时）
-await Promise.all(calls)
+// 等待所有调用完成（带超时保护）
+try {
+  await Promise.all(calls)
+} catch (error) {
+  console.log(`⚠️ Step 2 encountered errors: ${error.message}`)
+}
 
 // 完成 step-2
 endStep("step-2")
@@ -518,19 +782,37 @@ startStep("step-3")
 
 **执行流程**：
 ```typescript
-// 1. 读取所有思考文件
-const thinkFiles = glob.sync(`.plans/${taskName}/thinks/*.md`)
+// 辅助函数：获取最新的 Agent 输出文件
+function getLatestAgentOutput(taskName, agentType, callId) {
+  const pattern = `.plans/${taskName}/thinks/${agentType}-${callId}-*.md`
+  const files = glob.sync(pattern)
+
+  if (files.length === 0) {
+    return null
+  }
+
+  // 按文件名排序（包含时间戳），取最新的
+  const latestFile = files.sort().pop()
+  return read(latestFile)
+}
+
+// 1. 读取所有思考文件（使用之前保存的 call_id）
+const metisOutput = getLatestAgentOutput(taskName, "metis", metisCallId)
+const librarianOutput = needsLibrarian ? getLatestAgentOutput(taskName, "librarian", librarianCallIdHolder) : null
+const oracleOutput = needsOracle ? getLatestAgentOutput(taskName, "oracle", oracleCallIdHolder) : null
+const multimodalOutput = needsMultimodal ? getLatestAgentOutput(taskName, "multimodal-looker", multimodalCallIdHolder) : null
 
 // 2. 综合洞察并生成计划
 const plan = synthesizePlan({
-  metisOutput: read(".plans/${taskName}/thinks/metis-*.md"),
-  librarianOutput: needsLibrarian ? read(".plans/${taskName}/thinks/librarian-*.md") : null,
-  oracleOutput: needsOracle ? read(".plans/${taskName}/thinks/oracle-*.md") : null,
-  multimodalOutput: needsMultimodal ? read(".plans/${taskName}/thinks/multimodal-looker-*.md") : null
+  metisOutput,
+  librarianOutput,
+  oracleOutput,
+  multimodalOutput
 })
 
 // 3. 保存草稿
-write(".plans/${taskName}/thinks/plan-initial.md", plan)
+const planDraftPath = ".plans/${taskName}/thinks/plan-initial.md"
+write(planDraftPath, plan)
 
 // 4. 完成 step-3
 endStep("step-3")
@@ -581,37 +863,73 @@ if (userChoice === "Review with Momus") {
   let planValid = false
   let reviewAttempts = 0
   const maxAttempts = 3 // 最多审查 3 次
+  let planPath = ".plans/${taskName}/thinks/plan-initial.md"
 
   while (!planValid && reviewAttempts < maxAttempts) {
     reviewAttempts++
     const startTime = Date.now()
 
-    const momusResult = Task({
+    const momusResult = await Task({
       subagent_type: "momus",
       description: "Review plan for executability and blockers",
-      prompt: `Review this plan: .plans/${taskName}/thinks/plan-initial.md\n\n**你的职责**：你是计划审查者（Plan Reviewer），不是计划创建者。\n\n**请检查**：\n1. 计划的可执行性\n2. 引用的有效性\n3. 阻塞性问题\n4. 验收标准是否具体\n5. Agent-Executed QA Scenarios 是否完整\n\n**输出格式**：\n- Status: OKAY | REJECT\n- Blockers: [阻塞问题列表，如果有]\n- Notes: [审查意见]`,
+      prompt: `Review this plan: ${planPath}\n\n**你的职责**：你是计划审查者（Plan Reviewer），不是计划创建者。\n\n**请检查**：\n1. 计划的可执行性\n2. 引用的有效性\n3. 阻塞性问题\n4. 验收标准是否具体\n5. Agent-Executed QA Scenarios 是否完整\n\n**输出格式**：\n- Status: OKAY | REJECT\n- Blockers: [阻塞问题列表，如果有]\n- Notes: [审查意见]`,
       task_id: shouldUseSubsession("momus") ? `momus-${Date.now()}-${randomHex(8)}` : undefined,
-      output_path: `.plans/${taskName}/thinks/momus-${call_id}-${Date.now()}-V1.0.0.md`,
       timeout: 180000 // 3 分钟超时
     })
+
+    // 使用 session_id 作为 call_id 保存输出
+    const momusCallId = momusResult.task_id || momusResult.session_id || "current-session"
+    const momusOutputPath = `.plans/${taskName}/thinks/momus-${momusCallId}-${Date.now()}.md`
+    write(momusOutputPath, momusResult.output || JSON.stringify(momusResult))
 
     // 记录 Momus 调用时间
     recordAgentCall("momus", startTime, Date.now())
 
-    if (momusResult.status === "OKAY") {
+    // 解析 Momus 输出
+    const reviewStatus = parseMomusOutput(momusResult)
+
+    if (reviewStatus.status === "OKAY") {
       planValid = true
       console.log("✅ Momus 审查通过")
     } else {
       console.log(`⚠️ Momus 审查发现阻塞问题（尝试 ${reviewAttempts}/${maxAttempts}）`)
-      // 修复阻塞问题
-      const fixedPlan = fixBlockers(plan, momusResult.blockers)
-      write(".plans/${taskName}/thinks/plan-initial.md", fixedPlan)
+
+      if (reviewAttempts >= maxAttempts) {
+        console.log("⚠️ 已达到最大审查次数，停止尝试修复")
+        break
+      }
+
+      // 修复阻塞问题并重新读取修复后的计划
+      const currentPlan = read(planPath)
+      const fixedPlan = fixBlockers(currentPlan, reviewStatus.blockers)
+
+      // 保存修复后的计划（使用版本号区分）
+      const revisedPath = `.plans/${taskName}/thinks/plan-revised-v${reviewAttempts}.md`
+      write(revisedPath, fixedPlan)
+      planPath = revisedPath // 更新路径用于下次审查
     }
   }
 
   if (!planValid) {
     console.log("⚠️ Momus 审查未通过，但用户选择继续")
   }
+}
+
+// 辅助函数：解析 Momus 输出
+function parseMomusOutput(momusResult) {
+  const text = momusResult.output || JSON.stringify(momusResult)
+
+  // 尝试解析 Status 字段
+  const statusMatch = text.match(/Status:\s*(OKAY|REJECT)/i)
+  const status = statusMatch ? statusMatch[1].toUpperCase() : "REJECT"
+
+  // 尝试解析 Blockers
+  const blockersMatch = text.match(/Blockers:\s*\[([^\]]*)\]/)
+  const blockers = blockersMatch
+    ? blockersMatch[1].split(',').map(b => b.trim())
+    : []
+
+  return { status, blockers }
 }
 
 // 4. 完成 step-4
@@ -641,7 +959,15 @@ const finalPlanPath = `.plans/${taskName}/v1.0.0-${timestamp}.md`
 plan.metadata = {
   totalTime: ((Date.now() - sessionStartTime) / 1000).toFixed(2) + "s",
   stepTimings: stepTimings,
-  subagentStats: subagentStats
+  subagentStats: subagentStats,
+  // 记录所有使用的 session_id，用于中断回溯
+  sessionIds: {
+    metis: metisCallId,
+    librarian: needsLibrarian ? librarianCallIdHolder : null,
+    oracle: needsOracle ? oracleCallIdHolder : null,
+    multimodal: needsMultimodal ? multimodalCallIdHolder : null,
+    momus: momusCallId
+  }
 }
 
 // 3. 保存最终计划
@@ -695,7 +1021,8 @@ Object.entries(subagentStats).forEach(([agent, stats]) => {
 
 ### Agent Outputs Location
 - **Final Plan**: `.plans/{task-name}/v{major}.{minor}.{patch}-{YYYYmmddHHmm}.md`
-- **Sub-Agent Thoughts**: `.plans/{task-name}/thinks/{subagent-name}-{call_id}-{timestamp}-V{x.x.x}.md`
+- **Sub-Agent Thoughts**: `.plans/{task-name}/thinks/{subagent-name}-{session_id}-{timestamp}-V{x.x.x}.md`
+- **Session IDs**: 存储在最终计划的元数据中，用于中断回溯
 
 ---
 
@@ -746,6 +1073,15 @@ Object.entries(subagentStats).forEach(([agent, stats]) => {
   - Momus: {current | sub-session}
 - **Runtime Adjustment**: {true | false}
 
+### Session IDs (用于中断回溯)
+- **Metis**: `{metis_session_id}`
+- **Librarian**: `{librarian_session_id}`
+- **Oracle**: `{oracle_session_id}`
+- **Multimodal-Looker**: `{multimodal_session_id}`
+- **Momus**: `{momus_session_id}`
+
+> 如果推理过程被中断，可以通过这些 session_id 回溯到对应的状态，继续执行。
+
 ### Context Management
 - **Compression Level**: {full | summary | minimal}
 - **Last Summary At**: {turn_N or "none"}
@@ -774,11 +1110,11 @@ Object.entries(subagentStats).forEach(([agent, stats]) => {
 
 | Sub-Agent | Thought File | 关键洞察 |
 |------------|--------------|--------------|
-| **Metis** | `.plans/{task-name}/thinks/metis-{call_id}-{timestamp}-V1.0.0.md` | [意图分类、识别的 gap、guardrails] |
-| **Librarian** | `.plans/{task-name}/thinks/librarian-{call_id}-{timestamp}.md` | [外部研究发现、文档引用] |
-| **Oracle** | `.plans/{task-name}/thinks/oracle-{call_id}-{timestamp}.md` | [架构决策、权衡分析] |
-| **Multimodal-Looker** | `.plans/{task-name}/thinks/multimodal-looker-{call_id}-{timestamp}.md` | [媒体分析、提取的信息] |
-| **Momus** | `.plans/{task-name}/thinks/momus-{call_id}-{timestamp}.md` | [验证结果、已解决的阻塞] |
+| **Metis** | `.plans/{task-name}/thinks/metis-{session_id}-{timestamp}.md` | [意图分类、识别的 gap、guardrails] |
+| **Librarian** | `.plans/{task-name}/thinks/librarian-{session_id}-{timestamp}.md` | [外部研究发现、文档引用] |
+| **Oracle** | `.plans/{task-name}/thinks/oracle-{session_id}-{timestamp}.md` | [架构决策、权衡分析] |
+| **Multimodal-Looker** | `.plans/{task-name}/thinks/multimodal-looker-{session_id}-{timestamp}.md` | [媒体分析、提取的信息] |
+| **Momus** | `.plans/{task-name}/thinks/momus-{session_id}-{timestamp}.md` | [验证结果、已解决的阻塞] |
 
 ---
 
@@ -1039,9 +1375,12 @@ Question({
 After presenting summary, clean up draft files:
 
 ```bash
-# Remove initial draft (final plan is the source of truth)
-rm .plans/{task-name}/drafts/initial-plan.md
+# Remove plan-initial.md draft (final plan is the source of truth)
+rm .plans/${task-name}/thinks/plan-initial.md
+rm .plans/${task-name}/thinks/plan-revised-v*.md  # 如果有审查修订版本
 ```
+
+**Note**：保留所有 `{agent_type}-{call_id}-{timestamp}.md` 文件——它们提供 Sub-Agent 推理的审计追踪。仅删除综合后的计划草稿。
 
 **Note**：保留所有 `thinks/` 文件——它们提供 Sub-Agent 推理的审计追踪。
 
@@ -1053,11 +1392,11 @@ rm .plans/{task-name}/drafts/initial-plan.md
 |-------|---------|----------|---------|--------|
 | **Interview Mode** | Default state | Consult, clarify requirements | None | N/A |
 | **Orchestration Mode** | Clearance passes OR explicit trigger | Coordinate sub-agents, synthesize plan | `.plans/{task-name}/thinks/` | **Total Session Time tracked** |
-| **Step 1: 初始化 + Metis** | First step of orchestration | Create directory + Intent classification, gap identification | `.plans/{task-name}/thinks/metis-{call_id}-{timestamp}-V1.0.0.md` | **step-1** (includes network + API overhead) |
-| **Step 2: 并行 Sub-Agent** | After Metis | Parallel research (Librarian/Oracle/Multimodal-Looker) | `.plans/{task-name}/thinks/{subagent}-{call_id}-{timestamp}-V1.x.x.md` | **step-2** (includes network + API overhead) |
+| **Step 1: 初始化 + Metis** | First step of orchestration | Create directory + Intent classification, gap identification | `.plans/{task-name}/thinks/metis-{session_id}-{timestamp}.md` | **step-1** (includes network + API overhead) |
+| **Step 2: 并行 Sub-Agent** | After Metis | Parallel research (Librarian/Oracle/Multimodal-Looker) | `.plans/{task-name}/thinks/{subagent}-{session_id}-{timestamp}-V1.x.x.md` | **step-2** (includes network + API overhead) |
 | **Step 3: 计划综合** | After sub-agent outputs | Create comprehensive plan | `.plans/{task-name}/thinks/plan-initial.md` | **step-3** |
-| **Step 4: 用户决策 + Momus** | After plan synthesis | User confirmation + optional review | `.plans/{task-name}/thinks/momus-{call_id}-{timestamp}.md` | **step-4** (includes network + API overhead) |
-| **Step 5: Finalize** | User confirmation | Save timestamped final plan | `v1.0.0-{YYYYmmddHHmm}.md` | **step-5** |
+| **Step 4: 用户决策 + Momus** | After plan synthesis | User confirmation + optional review | `.plans/{task-name}/thinks/momus-{session_id}-{timestamp}.md` | **step-4** (includes network + API overhead) |
+| **Step 5: Finalize** | User confirmation | Save timestamped final plan + session IDs | `v1.0.0-{YYYYmmddHHmm}.md` | **step-5** |
 | **Handoff** | Plan finalized | Present summary, guide to execution | Clean up drafts | N/A |
 
 **Timing Definition**:
@@ -1065,7 +1404,8 @@ rm .plans/{task-name}/drafts/initial-plan.md
 
 ## Key Principles
 
-1. **Interview First** - 在编排之前理解需求
+1. **Session-Based Recovery** - 使用 session_id 作为 call_id，支持中断后的状态回溯和恢复
+2. **Interview First** - 在编排之前理解需求
 2. **Metis Always First** - 在任何其他 Sub-Agent 之前进行意图分类和 gap 检测
 3. **Parallel Sub-Agent Dispatch** - 在需要时并行启动 Librarian/Oracle/Multimodal-Looker（**不包括 Momus**）
 4. **Store All Thoughts** - 每个 Sub-Agent 的输出都保存到 `thinks/` 用于审计追踪
@@ -1196,6 +1536,10 @@ await Task({ subagent_type: "librarian", ... })
 - [ ] **明确 Momus 调用时机**：只在 STEP 4 调用，不在 STEP 2
 - [ ] **实现 Session Strategy**：根据复杂度决定是否使用 task_id
 - [ ] **记录 Sub-Agent 时间**：使用 `recordAgentCall()` 统计每个 Agent 的耗时
+- [ ] **Sub-Agent 调用决策**：从 Metis 输出解析 `needsLibrarian/Oracle/Multimodal`
+- [ ] **超时处理**：为每个 Sub-Agent 调用添加超时保护
+- [ ] **文件名一致性**：使用 session_id 作为 call_id（不含时间戳）
+- [ ] **并行文件读取**：使用 `getLatestAgentOutput()` 按时间戳取最新文件
 
 ---
 
