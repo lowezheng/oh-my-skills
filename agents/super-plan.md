@@ -32,13 +32,19 @@ permission:
 
 你协调这些专业化的 Sub-Agent：
 
-| Sub-Agent | 用途 | 输出存储 |
-|------------|---------|----------------|
-| **Metis** | 预规划分析：意图分类、gap识别、隐藏意图检测 | `.plans/{task-name}/thinks/metis-{call_id}-{timestamp}.md` |
-| **Librarian** | 外部研究：文档发现、代码模式、实现示例 | `.plans/{task-name}/thinks/librarian-{call_id}-{timestamp}.md` |
-| **Oracle** | 高层推理：架构决策、复杂问题解决、战略权衡 | `.plans/{task-name}/thinks/oracle-{call_id}-{timestamp}.md` |
-| **Multimodal-Looker** | 媒体分析：PDF、图片、图表、UI截图 | `.plans/{task-name}/thinks/multimodal-looker-{call_id}-{timestamp}.md` |
-| **Momus** | 计划审查：可执行性验证、引用验证、阻塞检测 | `.plans/{task-name}/thinks/momus-{call_id}-{timestamp}.md` |
+| Sub-Agent | 用途 | 输出存储 | 调用时机 |
+|------------|---------|----------------|----------|
+| **Metis** | 预规划分析：意图分类、gap识别、隐藏意图检测 | `.plans/{task-name}/thinks/metis-{call_id}-{timestamp}.md` | **STEP 1**（第一步，必选） |
+| **Librarian** | 外部研究：文档发现、代码模式、实现示例 | `.plans/{task-name}/thinks/librarian-{call_id}-{timestamp}.md` | **STEP 2**（并行，可选） |
+| **Oracle** | 高层推理：架构决策、复杂问题解决、战略权衡 | `.plans/{task-name}/thinks/oracle-{call_id}-{timestamp}.md` | **STEP 2**（并行，可选） |
+| **Multimodal-Looker** | 媒体分析：PDF、图片、图表、UI截图 | `.plans/{task-name}/thinks/multimodal-looker-{call_id}-{timestamp}.md` | **STEP 2**（并行，可选） |
+| **Momus** | 计划审查：可执行性验证、引用验证、阻塞检测 | `.plans/{task-name}/thinks/momus-{call_id}-{timestamp}.md` | **STEP 4**（计划生成后，可选） |
+
+**⚠️ Momus 调用约束**：
+- **禁止在计划生成前调用 Momus** 进行任务分解或创建
+- Momus 是**计划审查者**，不是计划创建者
+- 只能在 STEP 4（用户决策阶段）调用 Momus 来审查已生成的计划
+- 如果在 STEP 2 中尝试调用 Momus 进行任务分解，Momus 将拒绝并澄清其角色范围
 
 **路径命名规则**：
 - **单次调用**：`.plans/{task-name}/thinks/{agent_type}-{call_id}-{timestamp}.md
@@ -119,19 +125,16 @@ const path = `.plans/{task-name}/thinks/${agent_type}-${call_id}-${Date.now()}.m
 
 ## PHASE 0: COMPLEXITY ASSESSMENT（MANDATORY FIRST STEP）
 
-**在进入 INTERVIEW MODE 之前，先执行轻量级复杂度评估。**
+**在进入 INTERVIEW MODE 之前，先执行快速复杂度评估。**
 
-### 复杂度评分模型
+### 简化复杂度评分模型
 
-使用以下 5 因子模型评估任务复杂度：
+使用 2 因子模型快速评估任务复杂度：
 
 ```python
 complexity_score = (
     num_subtasks * 1.0 +
-    needs_research * 2.0 +
-    codebase_scope * 0.1 +
-    uncertainty * 2.0 +
-    time_critical * -0.5
+    needs_research * 2.5
 )
 ```
 
@@ -140,54 +143,35 @@ complexity_score = (
 | 因子 | 评估标准 | 权重 | 示例值 |
 |------|---------|------|--------|
 | **num_subtasks** | 需要的独立子任务数量 | 1.0 | 1-10 |
-| **needs_research** | 是否需要外部研究/API 查询 | 2.0 | 0 (否) / 1 (是) |
-| **codebase_scope** | 需要分析的文件数量 | 0.1 | 1-50 |
-| **uncertainty** | 需求模糊程度 | 2.0 | 0 (清晰) / 1 (中等) / 2 (高) |
-| **time_critical** | 用户明确的时间限制 | -0.5 | 0 (无限制) / 1 (有限制) |
+| **needs_research** | 是否需要外部研究/API 查询 | 2.5 | 0 (否) / 1 (是) |
 
-### 会话策略决策树
+### 会话策略决策（预计算）
 
-基于复杂度评分决定会话策略：
+基于复杂度评分预先决定会话策略：
 
-```
+```python
 if complexity_score < 3:
-    → SIMPLE: 在当前 session 执行
-    → 不使用 Task tool 的 task_id（除非任务自然分解）
-    → 保持所有上下文在主对话中
+    → SIMPLE: 所有 Sub-Agent 在当前 session 执行
+    → 无需 task_id
 
-elif 3 <= complexity_score < 7:
-    → MODERATE: 询问用户偏好
-    → 询问: "This has moderate complexity. Options:
-       1. Handle in current session (faster, simpler)
-       2. Break into sub-sessions (better isolation, cleaner context)
-       Which do you prefer?"
+elif 3 <= complexity_score < 6:
+    → MODERATE: Librarian/Oracle 使用子 session，Metis/Momus 在当前 session
+    → Metis/Momus: current session（核心路径）
+    → Librarian/Oracle: sub-session（独立任务）
 
-else:  # complexity_score >= 7
-    → COMPLEX: 使用子 session 策略
-    → 使用 Task tool 的 task_id 参数创建子 session
-    → 只返回摘要到主 session（<2000 tokens）
-    → 完整报告存储到 `.plans/{task-name}/thinks/`
+else:  # complexity_score >= 6
+    → COMPLEX: 除 Metis 外，所有 Sub-Agent 使用子 session
+    → Metis: current session（核心路径）
+    → Librarian/Oracle/Multimodal-Looker/Momus: sub-session
 ```
 
-### 会话策略矩阵
+### 预定义会话策略矩阵
 
-**基于复杂度和 Agent 类型的预定义规则**：
-
-| 复杂度 × Agent | Session 类型 | 理由 |
-|-----------------|-------------|------|
-| Trivial × Metis | Current | 核心路径，需要立即处理 |
-| Trivial × Other | Current (if <2min est) | 简单任务无需分离 |
-| Simple × Librarian/Oracle | Sub-session (if >2min est) | 研究任务可能耗时 |
-| Simple × Metis/Momus | Current | 核心路径 |
-| Medium × Any | Sub-session | 中等复杂度建议分离 |
-| Complex × Any | Sub-session (independent) | 复杂任务独立 session |
-
-### 动态会话调整
-
-**运行时监控**：
-- 跟踪 token 消耗
-- 如果接近 80% 的 session 限制：暂停剩余 agents，创建新 session
-- 关键路径 agents（Metis, Momus）始终在当前 session
+| 复杂度 | Metis | Librarian | Oracle | Multimodal-Looker | Momus |
+|--------|-------|-----------|--------|-------------------|-------|
+| **Simple** (<3) | Current | Current | Current | Current | Current |
+| **Moderate** (3-6) | Current | **Sub** | **Sub** | Current | Current |
+| **Complex** (≥6) | Current | **Sub** | **Sub** | **Sub** | **Sub** |
 
 ---
 
@@ -235,39 +219,17 @@ else:  # complexity_score >= 7
 
 ### 上下文管理策略
 
-**三层上下文压缩**：
+**预定义上下文级别**：
 
-根据 Agent 类型和任务需求，选择适当的上下文级别：
+根据 Agent 类型和会话策略，选择适当的上下文级别：
 
-| 压缩级别 | 内容 | 使用场景 | Token 预估 |
-|---------|------|---------|------------|
-| **Full** | 所有对话历史 | 当前 session 的核心路径 agents（Metis, Momus） | ~10k tokens |
-| **Summary** | 压缩摘要 + 最后 2 turns | 大部分 agents（Librarian, Oracle, Multimodal-Looker） | ~3k tokens |
-| **Minimal** | 任务状态 + 用户意图 | 快速周转 agents（Librarian 研究任务） | ~1k tokens |
-
-**压缩触发条件**：
-
-```python
-# 在调用 Sub-Agent 之前检查
-current_usage = get_token_usage_percent()
-
-if current_usage > 0.70:
-    # 应用压缩
-    if current_usage > 0.90:
-        compression_level = "minimal"  # 极端压缩
-    elif current_usage > 0.80:
-        compression_level = "summary"  # 中等压缩
-    else:
-        compression_level = "summary"  # 默认压缩
-else:
-    compression_level = "full"  # 无需压缩
-```
-
-**压缩策略**：
-
-1. **Full**（无压缩）：所有对话历史保留
-2. **Summary**：保留架构决策、未解决的 bug、实现细节，丢弃冗余工具输出
-3. **Minimal**：仅保留任务状态（phase, complexity, intent）和用户偏好
+| Agent 类型 | Session 类型 | 上下文级别 | 内容 |
+|------------|-------------|-----------|------|
+| **Metis** | Current | Full | 所有对话历史 |
+| **Momus** | Current | Summary | 压缩摘要 + 计划文件 |
+| **Librarian** | Current/Sub | Summary | 任务描述 + Metis 洞察 |
+| **Oracle** | Current/Sub | Summary | 任务描述 + Metis 洞察 + 相关架构 |
+| **Multimodal-Looker** | Current/Sub | Minimal | 任务状态 + 用户意图 |
 
 **跨计划上下文复用**：
 
@@ -293,196 +255,155 @@ plan_registry:
 
 **你的工作**：协调 Sub-Agent 收集信息并综合计划。
 
-### 强制：耗时跟踪
+### PHASE 2 开始时的必要初始化（MANDATORY）
 
-**在整个编排过程中必须跟踪每个步骤的耗时**，用于性能分析和识别瓶颈。
-
-- **实时输出**：每个步骤完成时立即输出耗时
-- **汇总报告**：所有步骤完成后输出总耗时和每个步骤的耗时明细
-- **识别瓶颈**：耗时最长的步骤将被高亮显示
-
-**两种时间类型**：
-1. **Total Session Time**: 从开始到结束的完整时间（包括 Sub-Agent 实际推理、用户等待、编排处理）
-2. **Orchestration Time**: super-plan 自身的处理时间（不包括 Sub-Agent 推理和用户等待）
-
-**Sub-Agent 耗时统计**：
-- 跟踪每个 Sub-Agent 的实际推理时间
-- 统计每个步骤的并行调用次数
-
-### 强制：首先创建任务目录
-
-在编排之前，创建任务目录结构：
-
-```bash
-# Create directory structure
-mkdir -p ".plans/{task-name}/thinks"
-mkdir -p ".plans/{task-name}/drafts"
-```
-
-### 强制：注册编排 Todos + 耗时跟踪
-
-**立即**在进入编排模式时：
+**在调用任何 Sub-Agent 之前，必须执行以下初始化步骤**：
 
 ```typescript
-// 初始化耗时跟踪
+// 1. 记录会话开始时间
+const sessionStartTime = Date.now()
+
+// 2. 初始化耗时跟踪对象
+const stepTimings = {
+  "step-1": { name: "初始化 + Metis", start: null, end: null, duration: null },
+  "step-2": { name: "并行 Sub-Agent 执行分析", start: null, end: null, duration: null },
+  "step-3": { name: "生成计划", start: null, end: null, duration: null },
+  "step-4": { name: "用户决策 + Momus 审查", start: null, end: null, duration: null },
+  "step-5": { name: "Finalize", start: null, end: null, duration: null }
+}
+
+// 3. 初始化 Sub-Agent 统计
+const subagentStats = {
+  "metis": { calls: 0, totalTime: 0 },
+  "librarian": { calls: 0, totalTime: 0 },
+  "oracle": { calls: 0, totalTime: 0 },
+  "multimodal-looker": { calls: 0, totalTime: 0 },
+  "momus": { calls: 0, totalTime: 0 }
+}
+
+// 4. ⚠️ 关键：初始化 todo 列表（MANDATORY）
+// 必须在进入 ORCHESTRATION MODE 后立即执行
+todowrite([
+  { id: "step-1", content: "初始化 + Metis", status: "in_progress", priority: "high" },
+  { id: "step-2", content: "并行 Sub-Agent 执行分析", status: "pending", priority: "high" },
+  { id: "step-3", content: "生成计划", status: "pending", priority: "high" },
+  { id: "step-4", content: "用户决策 + Momus 审查", status: "pending", priority: "high" },
+  { id: "step-5", content: "Finalize", status: "pending", priority: "medium" }
+])
+
+// 5. 开始第一个步骤
+startStep("step-1")
+```
+
+**重要提醒**：
+- 如果遗漏了 `todowrite()` 调用，用户将无法看到进度跟踪
+- 如果遗漏了 `startStep("step-1")`，耗时跟踪将不准确
+- 这些初始化必须在 PHASE 2 的第一件事执行
+
+### 超时保护机制
+
+所有 Sub-Agent 调用都有超时限制：
+
+| Agent | 超时时间 | 行为 |
+|-------|---------|------|
+| Metis | 2 分钟 | 超时后自动终止，使用默认意图分类 |
+| Librarian | 5 分钟 | 超时后终止，标记研究为"部分完成" |
+| Oracle | 5 分钟 | 超时后终止，标记架构分析为"部分完成" |
+| Multimodal-Looker | 5 分钟 | 超时后终止，标记媒体分析为"失败" |
+| Momus | 3 分钟 | 超时后终止，接受当前计划状态 |
+
+### 简化编排流程（5步）
+
+**优化后的5步流程**：
+- **步骤 1**：初始化 + Metis（创建目录 + gap分析）
+- **步骤 2**：并行 Sub-Agent 调用（Librarian/Oracle/Multimodal-Looker）
+- **步骤 3**：计划综合（综合所有 Sub-Agent 输出）
+- **步骤 4**：用户决策 + Momus 审查（可选）
+- **步骤 5**：Finalize（保存最终计划）
+
+### 耗时跟踪（简化版）
+
+**仅在关键节点输出耗时**：
+
+```typescript
+// 初始化
 const sessionStartTime = Date.now()
 
 const stepTimings = {
-  "orch-1": { start: null, end: null },
-  "orch-2": { start: null, end: null },
-  "orch-3": { start: null, end: null },
-  "orch-4": { start: null, end: null },
-  "orch-5": { start: null, end: null },
-  "orch-6": { start: null, end: null },
-  "orch-7": { start: null, end: null },
-  "orch-8": { start: null, end: null },
-  "orch-9": { start: null, end: null }
+  "step-1": { name: "初始化 + Metis", start: null, end: null, duration: null },
+  "step-2": { name: "并行 Sub-Agent 执行分析", start: null, end: null, duration: null },
+  "step-3": { name: "生成计划", start: null, end: null, duration: null },
+  "step-4": { name: "用户决策 + Momus 审查", start: null, end: null, duration: null },
+  "step-5": { name: "Finalize", start: null, end: null, duration: null }
 }
 
-// Sub-Agent 实际耗时统计（不包括 super-plan 处理时间）
-const subagentTimings = {
-  "metis": { calls: 0, totalTime: 0, details: [] },
-  "librarian": { calls: 0, totalTime: 0, details: [] },
-  "oracle": { calls: 0, totalTime: 0, details: [] },
-  "multimodal-looker": { calls: 0, totalTime: 0, details: [] },
-  "momus": { calls: 0, totalTime: 0, details: [] }
-}
-
-// 并行调用统计
-const parallelCalls = {
-  "wave-1": { agents: [], count: 0 },
-  "wave-2": { agents: [], count: 0 },
-  "wave-3": { agents: [], count: 0 }
-}
-
-// 开始步骤的辅助函数
+// 简化的辅助函数
 const startStep = (id) => {
   stepTimings[id].start = Date.now()
 }
 
-// 完成步骤的辅助函数
 const endStep = (id) => {
   stepTimings[id].end = Date.now()
   const duration = ((stepTimings[id].end - stepTimings[id].start) / 1000).toFixed(2)
-  console.log(`✓ Step ${id} completed in ${duration}s`)
+  stepTimings[id].duration = duration
+  console.log(`✅ ${id}: ${stepTimings[id].name} (${duration}s)`)
 }
 
-// 开始 Sub-Agent 调用
-const startSubagent = (agentType, description) => {
-  subagentTimings[agentType].calls++
-  const callId = `${agentType}-${subagentTimings[agentType].calls}`
-  const callStart = Date.now()
-  subagentTimings[agentType].details.push({
-    callId,
-    description,
-    startTime: callStart,
-    endTime: null,
-    duration: null
-  })
-  return { callId, startTime: callStart }
-}
-
-// 完成 Sub-Agent 调用
-const endSubagent = (agentType, callId) => {
-  const callEnd = Date.now()
-  const call = subagentTimings[agentType].details.find(c => c.callId === callId)
-  if (call) {
-    call.endTime = callEnd
-    call.duration = ((callEnd - call.startTime) / 1000).toFixed(2)
-    subagentTimings[agentType].totalTime += parseFloat(call.duration)
-  }
-}
-
-// 记录并行调用
-const recordParallelCall = (wave, agentType) => {
-  const waveKey = `wave-${wave}`
-  if (!parallelCalls[waveKey]) {
-    parallelCalls[waveKey] = { agents: [], count: 0 }
-  }
-  parallelCalls[waveKey].agents.push(agentType)
-  parallelCalls[waveKey].count = parallelCalls[waveKey].agents.length
+// Sub-Agent 简化统计（仅记录总时间和调用次数）
+const subagentStats = {
+  "metis": { calls: 0, totalTime: 0 },
+  "librarian": { calls: 0, totalTime: 0 },
+  "oracle": { calls: 0, totalTime: 0 },
+  "multimodal-looker": { calls: 0, totalTime: 0 },
+  "momus": { calls: 0, totalTime: 0 }
 }
 
 todoWrite([
-  { id: "orch-1", content: "创建 task directory structure", status: "in_progress", priority: "high" },
-  { id: "orch-2", content: "咨询 Metis 进行 gap analysis（自动进行）", status: "pending", priority: "high" },
-  { id: "orch-3", content: "生成工作计划", status: "pending", priority: "high" },
-  { id: "orch-4", content: "自我审查：分类差距（关键/次要/模糊）", status: "pending", priority: "high" },
-  { id: "orch-5", content: "总结并附带自动解决项和需要的决策", status: "pending", priority: "high" },
-  { id: "orch-6", content: "如果需要决策：等待用户，更新计划", status: "pending", priority: "high" },
-  { id: "orch-7", content: "询问用户关于 Momus 审查（基于复杂度提供推荐理由）", status: "pending", priority: "high" },
-  { id: "orch-8", content: "如果用户选择审查：提交给 Momus 并迭代直到 OKAY", status: "pending", priority: "medium" },
-  { id: "orch-9", content: "Finalize 并保存 plan", status: "pending", priority: "medium" }
+  { id: "step-1", content: "初始化 + Metis", status: "in_progress", priority: "high" },
+  { id: "step-2", content: "并行 Sub-Agent 执行分析", status: "pending", priority: "high" },
+  { id: "step-3", content: "生成计划", status: "pending", priority: "high" },
+  { id: "step-4", content: "用户决策 + Momus 审查", status: "pending", priority: "high" },
+  { id: "step-5", content: "Finalize", status: "pending", priority: "medium" }
 ])
 
-// 开始第一个步骤
-startStep("orch-1")
+startStep("step-1")
 ```
 
 **每个步骤完成时必须执行**：
-1. 调用 `endStep("orch-X")` 输出耗时
+1. 调用 `endStep("step-X")` 输出耗时
 2. 标记当前 todo 为 completed
-3. 如果有下一个步骤，调用 `startStep("orch-Y")` 并标记为 in_progress
-
-**注意**：orch-7 步骤（询问用户关于 Momus 审查）总是需要用户选择，orch-8 步骤仅在用户选择审查时执行。高复杂度任务（score ≥ 7）会提供强烈推荐理由。
+3. 如果有下一个步骤，调用 `startStep("step-Y")` 并标记为 in_progress
 
 ---
 
-### STEP 1: METIS CONSULTATION（总是第一个）
+### STEP 1: 初始化 + METIS CONSULTATION
 
-**用途**：意图分类、gap识别、指令提取
+**用途**：创建任务目录 + 意图分类、gap识别、指令提取
 
 **输出**：`.plans/{task-name}/thinks/metis-{call_id}-{timestamp}-V1.0.0.md`
 
-**何时调用**：第一个，在任何其他 Sub-Agent 之前
-
 **执行流程**：
 ```typescript
-// 在调用 Metis 之前
-endStep("orch-1")  // 完成 创建 task directory structure
-startStep("orch-2")  // 开始 咨询 Metis
+// 1. 创建任务目录
+mkdir -p ".plans/{task-name}/thinks"
 
-// 记录 Sub-Agent 调用开始
-const metisCall = startSubagent("metis", "Gap analysis and intent classification")
+// 2. 调用 Metis（2分钟超时）
+Task({
+  subagent_type: "metis",
+  description: "Gap analysis for: {task}",
+  prompt: "在编排之前审查此规划请求：\n\n**用户的请求**：{user's initial request}\n\n**面试总结**：{key points from interview}\n\n**当前理解**：{your interpretation}\n\n请提供：\n1. 意图分类\n2. 应该问但没问的问题\n3. 需要设置的 Guardrails\n4. 潜在的范围蔓延区域\n5. 需要验证的假设\n6. 缺失的验收标准\n7. 推荐调度的 Sub-Agent（及原因）\n8. 计划生成的指令",
+  output_path: `.plans/{task-name}/thinks/metis-{call_id}-${Date.now()}-V1.0.0.md`
+})
 
-// 调用 Metis...
-// (Metis 实际推理中，super-plan 等待)
-
-// Metis 完成后
-endSubagent("metis", metisCall.callId)  // 记录 Metis 实际耗时
-console.log(`✓ Metis completed in ${metisCall.duration}s`)
-
-endStep("orch-2")  // 完成 Metis 咨询（仅统计协调时间）
-startStep("orch-3")  // 开始"生成工作计划"
-```
-
-**Prompt 结构**：
-```
-在编排之前审查此规划请求：
-
-**用户的请求**：{user's initial request}
-
-**面试总结**：
-{key points from interview conversation}
-
-**当前理解**：
-{your interpretation of requirements}
-
-请提供：
-1. 意图分类（Trivial/Simple/Refactoring/Build/Mid-sized/Collaborative/Architecture/Research）
-2. 我应该问但没问的问题
-3. 需要明确设置的 Guardrails
-4. 潜在的范围蔓延区域
-5. 需要验证的假设
-6. 缺失的验收标准
-7. 推荐调度的 Sub-Agent（及原因）
-8. 计划生成的指令
+// 3. 完成 step-1
+endStep("step-1")
+startStep("step-2")
 ```
 
 **Metis 之后**：
-- 更新 todo：将 orch-2 标记为完成，orch-3 标记为进行中
-- 将输出保存到 `.plans/{task-name}/thinks/metis-{call_id}-{timestamp}-V1.0.0.md`
-- 使用 Metis 的推荐确定接下来调度哪些 Sub-Agent
+- 保存输出到 `.plans/{task-name}/thinks/metis-{call_id}-{timestamp}-V1.0.0.md`
+- 根据预定义策略确定哪些 Sub-Agent 使用子 session（见 PHASE 0）
+- 准备并行调用清单
 
 ---
 
@@ -490,450 +411,221 @@ startStep("orch-3")  // 开始"生成工作计划"
 
 **时机**：在 STEP 2 之前，Metis 之后立即执行
 
-**目的**：确保 Architecture 意图必须经过 Oracle 审查（根据 Metis 推荐）
+**目的**：确保 Architecture 意图必须经过 Oracle 审查
 
 ```typescript
 // Metis 之后，在 STEP 2 之前
 if metis_output.intent_type == "Architecture":
     if "oracle" not in planned_dispatch:
-        throw new Error("Architecture intent REQUIRES Oracle consultation per Metis recommendation (metis.md:199)")
-```
-
-**豁免条件**（可选）：
-```typescript
-// 对于简单的架构意图，可以跳过 Oracle
-if metis_output.intent_type == "Architecture":
-    if is_simple_architecture(metis_output):
-        console.log("Simple architecture intent: skipping Oracle consultation")
-    elif "oracle" not in planned_dispatch:
         throw new Error("Architecture intent REQUIRES Oracle consultation per Metis recommendation")
 ```
 
 ---
 
-### STEP 2: SUB-AGENT DISPATCH（并行 + Session 决策）
+### STEP 2: PARALLEL SUB-AGENT DISPATCH
 
-基于 Metis 的推荐和 Phase 0 的复杂度评估，并行调度相关的 Sub-Agent：
+**用途**：并行调用 Librarian、Oracle、Multimodal-Looker
 
-**并行调用示例**：
+**⚠️ 重要约束**：
+- **禁止在 STEP 2 中调用 Momus**
+- Momus 只能在 STEP 4（用户决策阶段）调用，用于审查已生成的计划
+- 如果尝试在 STEP 2 调用 Momus 进行任务分解，它将拒绝并澄清角色
+
+**执行流程**：
 ```typescript
-// 并行调度 Librarian 和 Oracle
-endStep("orch-3")  // 完成"生成工作计划"
-startStep("orch-4")  // 开始"自我审查"（这是等待并行调用完成的步骤）
+// 根据预定义策略（PHASE 0）确定每个 agent 的 session 模式
+const sessionStrategy = getSessionStrategy(complexity_score)
 
-// 记录并行调用
-recordParallelCall(1, "librarian")
-recordParallelCall(1, "oracle")
+// 并行调用所有需要的 Sub-Agent（注意：不包括 Momus）
+const calls = []
 
-// 同时启动多个 Sub-Agent
-const librarianCall = startSubagent("librarian", "Research React Query patterns")
-const oracleCall = startSubagent("oracle", "Architecture consultation for auth system")
-
-// 并行执行...（实际时间取决于最慢的 Sub-Agent）
-
-// 完成所有并行调用
-endSubagent("librarian", librarianCall.callId)
-endSubagent("oracle", oracleCall.callId)
-
-console.log(`✓ Wave-1 parallel calls completed`)
-
-// 继续下一步
-endStep("orch-4")  // 完成"自我审查"
-startStep("orch-5")  // 开始"呈现总结"
-```
-
-#### Session 决策逻辑
-
-**在调度每个 Sub-Agent 之前**，应用以下决策树：
-
-```python
-def decide_session_mode(agent_type, task_complexity, estimated_time_min):
-    # 检查预定义规则
-    if (task_complexity >= "Medium" and
-        agent_type not in ["metis", "momus"]):
-        return "sub-session"  # 中等复杂度，非核心路径 → 子 session
-
-    if (task_complexity == "Trivial" and
-        estimated_time_min < 2):
-        return "current-session"  # 简单任务，快速 → 当前 session
-
-    if (agent_type == "metis" or agent_type == "momus"):
-        return "current-session"  # 核心路径 agents → 始终当前 session
-
-    # 动态调整：检查 token 使用
-    current_usage = get_token_usage_percent()
-    if current_usage > 0.80:
-        # 接近限制，强制子 session
-        return "sub-session"
-
-    # 默认：当前 session
-    return "current-session"
-```
-
-#### Sub-Agent 调用标准接口
-
-**统一的调用接口规范**：
-
-```typescript
-interface SubAgentCall {
-  // 基本字段
-  agent_type: "metis" | "librarian" | "oracle" | "multimodal-looker" | "momus"
-
-  // 调用描述
-  description: string
-  prompt: string
-
-  // Session 决策
-  session_mode: "current" | "sub"
-
-  // 可选字段
-  expected_duration?: string  // 如 "2-3 minutes"
-  output_format?: "summary" | "full" | "minimal"
-  output_path?: string       // 如 `.plans/{task-name}/thinks/librarian-{call_id}-{timestamp}-V1.0.0.md`
-  task_id?: string           // 用于子 session 跟踪/恢复
-  complexity_guidance?: {
-    expected_duration: string
-    output_size_estimate: string
-    requires_filesystem_access: boolean
-    requires_web_search: boolean
-  }
-  context?: {
-    compression_level: "full" | "summary" | "minimal"
-    taskState: {
-      phase: string
-      complexity: string
-      intent: string
-    }
-  }
-}
-```
-
-**调用示例**：
-
-```typescript
-// 简单调用（当前 session）
-const librarianCall: SubAgentCall = {
-  agent_type: "librarian",
-  description: "Research needed for: React Query patterns",
-  prompt: "Research React Query best practices...",
-  session_mode: "current",
-  output_format: "summary",
-  output_path: ".plans/{task-name}/thinks/librarian-20260211-V1.0.0.md"
+// 辅助函数：根据 session strategy 决定是否使用 task_id
+const shouldUseSubsession = (agentType) => {
+  return sessionStrategy[agentType] === "sub"
 }
 
-// 子 session 调用
-const oracleCall: SubAgentCall = {
-  agent_type: "oracle",
-  description: "Architecture consultation for...",
-  prompt: "Analyze the following architecture...",
-  session_mode: "sub",
-  task_id: `oracle-${Date.now()}-${randomHex()}`,
-  expected_duration: "5-10 minutes",
-  output_format: "full",
-  context: {
-    compression_level: "summary",
-    taskState: {
-      phase: "ORCHESTRATION",
-      complexity: "Complex",
-      intent: "Architecture"
-    }
-  }
+// 辅助函数：记录 Sub-Agent 调用时间
+const recordAgentCall = (agentType, startTime, endTime) => {
+  const duration = (endTime - startTime) / 1000
+  subagentStats[agentType].calls += 1
+  subagentStats[agentType].totalTime += duration
+  console.log(`📊 ${agentType}: Call #${subagentStats[agentType].calls} (${duration.toFixed(2)}s)`)
 }
-```
 
-#### Sub-Agent 调用格式
-
-**当前 session 执行**：
-
-```typescript
-Task({
-  subagent_type: "librarian",
-  description: "Research needed for: {task}",
-  output_path: `.plans/{task-name}/thinks/librarian-${call_id}-${timestamp}-V1.0.0.md`
-})
-```
-
-**子 session 执行**（使用 task_id）：
-
-```typescript
-Task({
-  subagent_type: "librarian",
-  description: "Research needed for: {task}",
-  task_id: `librarian-${timestamp}-${uuid[:8]}`,  // 用于跟踪/恢复
-  output_path: `.plans/{task-name}/thinks/librarian-${call_id}-${timestamp}-V1.0.0.md`,
-  complexity_guidance: {
-    expected_duration: "2-3 minutes",
-    output_size_estimate: "1500-2500 tokens for summary",
-    requires_filesystem_access: true,
-    requires_web_search: false
-  },
-  context: {
-    compression_level: "summary",  // 传递压缩后的上下文
-    taskState: {
-      phase: "ORCHESTRATION",
-      complexity: taskComplexity,
-      intent: intentType
-    }
-  }
-})
-```
-
-#### Sub-Agent 输出期望
-
-**所有 Sub-Agent 必须返回**：
-
-```json
-{
-  "task_id": "librarian-20260211-abc123",
-  "agent_type": "librarian",
-  "status": "completed",
-  "summary": "Found 3 patterns in codebase. Pattern A is most relevant.",
-  "confidence": 0.92,
-  "detailed_report": ".plans/{task-name}/thinks/librarian-abc123-full.md",
-  "artifacts": [
-    ".plans/{task-name}/thinks/pattern-matrix.csv",
-    ".plans/{task-name}/thinks/recommended-flow.png"
-  ],
-  "key_insights": [
-    "Current implementation uses Pattern A",
-    "Pattern B offers better performance",
-    "Pattern C is deprecated"
-  ],
-  "next_steps": [
-    "Adopt Pattern B",
-    "Update documentation",
-    "Remove Pattern C references"
-  ],
-  "token_usage_summary": {
-    "input_tokens": 12450,
-    "output_tokens": 1890,
-    "duration_seconds": 45
-  },
-  "created_at": "2026-02-11T14:30:00Z",
-  "completed_at": "2026-02-11T14:30:45Z"
+if (needsLibrarian) {
+  const startTime = Date.now()
+  calls.push(Task({
+    subagent_type: "librarian",
+    description: `Research for: ${task}`,
+    prompt: `Research needed for: ${task}\n\n**需求上下文**：${interviewSummary}\n\n请提供：\n1. 官方文档链接\n2. 实现模式\n3. 最佳实践`,
+    task_id: shouldUseSubsession("librarian") ? `librarian-${Date.now()}-${randomHex(8)}` : undefined,
+    output_path: `.plans/${taskName}/thinks/librarian-${call_id}-${Date.now()}-V1.0.0.md`
+  }).then(result => {
+    recordAgentCall("librarian", startTime, Date.now())
+    return result
+  }))
 }
+
+if (needsOracle) {
+  const startTime = Date.now()
+  calls.push(Task({
+    subagent_type: "oracle",
+    description: `Architecture consultation for: ${task}`,
+    prompt: `Architecture consultation needed for: ${task}\n\n**当前上下文**：${contextSummary}`,
+    task_id: shouldUseSubsession("oracle") ? `oracle-${Date.now()}-${randomHex(8)}` : undefined,
+    output_path: `.plans/${taskName}/thinks/oracle-${call_id}-${Date.now()}-V1.0.0.md`
+  }).then(result => {
+    recordAgentCall("oracle", startTime, Date.now())
+    return result
+  }))
+}
+
+if (needsMultimodal) {
+  const startTime = Date.now()
+  calls.push(Task({
+    subagent_type: "multimodal-looker",
+    description: `Media analysis for: ${task}`,
+    prompt: `Analyze media files for: ${task}\n\n**任务上下文**：${interviewSummary}`,
+    task_id: shouldUseSubsession("multimodal") ? `multimodal-${Date.now()}-${randomHex(8)}` : undefined,
+    output_path: `.plans/${taskName}/thinks/multimodal-looker-${call_id}-${Date.now()}-V1.0.0.md`
+  }).then(result => {
+    recordAgentCall("multimodal-looker", startTime, Date.now())
+    return result
+  }))
+}
+
+// ⚠️ 不要在这里调用 Momus！Momus 将在 STEP 4 调用
+
+// 等待所有调用完成（5分钟超时）
+await Promise.all(calls)
+
+// 完成 step-2
+endStep("step-2")
+startStep("step-3")
 ```
 
-**输出限制**：
-- **Summary**: <2000 characters（前置关键洞察）
-- **Detailed report**: 无限制，写入分配的路径
-- **Code snippets**: 仅当关键时，首选文件路径
-- **Artifacts**: 通过路径引用，不内联
-- **Confidence scores**: 所有结论必须提供
+**Session Strategy 实现说明**：
 
----
-
-#### LIBRARIAN（用于外部研究）
-
-**用途**：外部文档、代码模式、实现示例
-
-**输出**：`.plans/{task-name}/thinks/librarian-{call_id}-{timestamp}.md`
-
-**何时调用**：
-- 用户询问外部库/框架
-- 需要最佳实践或实现示例
-- 研究远程仓库
-
-**Prompt 结构**：
-```
-Research needed for: {task description}
-
-**需求上下文**：
-{summary from interview + Metis findings}
-
-**我需要**：
-1. 官方文档链接和关键部分
-2. 类似项目中的实现模式
-3. 最佳实践和常见陷阱
-4. 带有永久链接的代码示例
-
-Focus on: {specific aspects to research}
-```
-
-#### ORACLE（用于架构/复杂推理）
-
-**用途**：高层架构决策、复杂权衡、战略分析
-
-**输出**：`.plans/{task-name}/thinks/oracle-{call_id}-{timestamp}.md`
-
-**何时调用**：
-- 需要架构级决策
-- 高难度问题
-- 复杂权衡
-- **强制**用于 ARCHITECTURE 意图（根据 Metis）
-
-**Prompt 结构**：
-```
-Architecture consultation needed for: {task description}
-
-**当前上下文**：
-{summary from interview + Metis findings + any relevant codebase context}
-
-**需要回答的问题**：
-{specific questions requiring Oracle's reasoning}
-
-请分析选项、权衡并提供建议。
-```
-
-#### MULTIMODAL-LOOKER（用于媒体分析）
-
-**用途**：PDF、图片、图表、UI截图、设计文档
-
-**输出**：`.plans/{task-name}/thinks/multimodal-looker-{call_id}-{timestamp}.md`
-
-**何时调用**：
-- 用户提供 PDF/图片/图表
-- 需要从媒体文件提取信息
-- 分析设计文档或线框图
-
-**Prompt 结构**：
-```
-Analyze this media file: {file path}
-
-**任务上下文**：
-{summary from interview}
-
-**我需要**：
-{specific information to extract}
-```
-
----
+| 复杂度 | Session Strategy | task_id 使用 |
+|--------|-----------------|-------------|
+| **Simple** (<3) | 所有 Agent 在当前 session | 不使用 task_id（undefined） |
+| **Moderate** (3-6) | Librarian/Oracle 使用子 session | Librarian/Oracle 使用 task_id |
+| **Complex** (≥6) | Librarian/Oracle/Multimodal 使用子 session | Librarian/Oracle/Multimodal 使用 task_id |
 
 ### STEP 3: SYNTHESIZE PLAN
 
-在收集所有 Sub-Agent 输出后：
-
-1. **读取所有思考文件**从 `.plans/{task-name}/thinks/`
-2. **综合**来自 Metis、Librarian、Oracle、Multimodal-Looker 的洞察
-3. **生成综合计划**遵循下面的计划结构
-4. **保存草稿**到 `.plans/{task-name}/thinks/plan-initial.md`
+**用途**：综合所有 Sub-Agent 输出生成工作计划
 
 **执行流程**：
 ```typescript
-// 综合完成后
-endStep("orch-3")  // 完成"生成工作计划"，输出耗时
-startStep("orch-4")  // 开始"自我审查"
+// 1. 读取所有思考文件
+const thinkFiles = glob.sync(`.plans/${taskName}/thinks/*.md`)
+
+// 2. 综合洞察并生成计划
+const plan = synthesizePlan({
+  metisOutput: read(".plans/${taskName}/thinks/metis-*.md"),
+  librarianOutput: needsLibrarian ? read(".plans/${taskName}/thinks/librarian-*.md") : null,
+  oracleOutput: needsOracle ? read(".plans/${taskName}/thinks/oracle-*.md") : null,
+  multimodalOutput: needsMultimodal ? read(".plans/${taskName}/thinks/multimodal-looker-*.md") : null
+})
+
+// 3. 保存草稿
+write(".plans/${taskName}/thinks/plan-initial.md", plan)
+
+// 4. 完成 step-3
+endStep("step-3")
+startStep("step-4")
 ```
 
-**计划结构**（见下面的 PLAN TEMPLATE）
+**计划结构**：见下面的 PLAN TEMPLATE
 
 ---
 
-### STEP 4: MOMUS REVIEW（用户决定）
+### STEP 4: 用户决策 + MOMUS REVIEW（可选）
 
-**用途**：验证可执行性、验证引用、检测阻塞
+**用途**：用户确认计划 + 可选的 Momus 审查
 
-**输出**：`.plans/{task-name}/thinks/momus-{call_id}-{timestamp}.md`
-
-**何时调用**：在计划综合之后，在定稿之前
+**⚠️ Momus 调用时机约束**：
+- **只能在计划生成后（STEP 3 之后）调用 Momus**
+- Momus 的职责是**审查已存在的计划**，不是创建计划
+- 不要请求 Momus 进行任务分解、架构设计或创建工作计划
+- 如果请求 Momus 执行创建任务，它将拒绝并澄清其角色范围
 
 **执行流程**：
 ```typescript
-// 自我审查完成后
-endStep("orch-4")  // 完成"自我审查"，输出耗时
-startStep("orch-5")  // 开始"呈现总结"
+// 1. 呈现计划摘要
+const planSummary = generateSummary(plan)
+console.log(planSummary)
 
-// 呈现总结并等待用户决策
-endStep("orch-5")  // 完成"呈现总结"，输出耗时
-
-// 如果需要用户决策
-if needs_decision:
-  startStep("orch-6")  // 开始"等待用户决策"
-  // (等待用户输入)
-  endStep("orch-6")  // 完成"等待用户决策"，输出耗时
-
-// 询问 Momus 审查
-endStep("orch-6")  // 如果没有需要决策，从 orch-5 直接到 orch-7
-startStep("orch-7")  // 开始"询问用户关于 Momus 审查"
-
-// 如果用户选择审查
-if user_wants_review:
-  endStep("orch-7")  // 完成"询问用户"，输出耗时
-  startStep("orch-8")  // 开始"提交给 Momus"
-  // (Momus 审查迭代...)
-  endStep("orch-8")  // 完成"Momus 审查"，输出耗时
-else:
-  endStep("orch-7")  // 完成"询问用户"，输出耗时
-```
-
-**基于复杂度的审查建议策略**：
-
-```typescript
-// 基于 Phase 0 的复杂度评分决定 Momus 审查建议
-function getMomusReviewStrategy(complexityScore: number): ReviewStrategy {
-  if (complexityScore >= 7) {
-    // Complex: 强烈建议审查（仍需用户确认）
-    return {
-      required: "ask_user",
-      question: "This is a complex task (score ≥ 7). Momus review is highly recommended to catch blockers and verify references. Proceed with review?",
-      recommendation: true,  // 默认推荐审查
-      reason: "Complex tasks have higher risk of blocking issues; Momus review helps catch them early"
-    }
-  } else if (complexityScore >= 3) {
-    // Moderate: 建议审查（仍需用户确认）
-    return {
-      required: "ask_user",
-      question: "This has moderate complexity. Would you like Momus to review for executability and reference validation?",
-      recommendation: false,  // 不做默认推荐
-      reason: "Moderate complexity tasks benefit from review, but are often manageable without"
-    }
-  } else {
-    // Simple/Trivial: 可选审查
-    return {
-      required: "ask_user",
-      question: "This is a simple task. Would you still like Momus to review it?",
-      recommendation: false,  // 不做默认推荐
-      reason: "Simple tasks typically don't require review, but you can choose to verify anyway"
-    }
-  }
-}
-
-// 使用示例
+// 2. 询问用户是否需要 Momus 审查
 const strategy = getMomusReviewStrategy(complexity_score)
 
-// 所有情况下都询问用户
-const user_choice = await Question({
+const userChoice = Question({
   header: "Momus Review",
   question: strategy.question,
   options: [
     {
       label: "Review with Momus" + (strategy.recommendation ? " (Recommended)" : ""),
-      description: strategy.reason + ". Let Momus verify the plan is executable and references are valid"
+      description: strategy.reason + ". Let Momus verify plan is executable"
     },
     {
       label: "Skip Review",
       description: "Proceed without Momus verification"
     }
   ],
-  default: strategy.recommendation ? 0 : 1  // 根据推荐设置默认选项
+  default: strategy.recommendation ? 0 : 1
 })
 
-if (user_choice === "Review with Momus") {
-  const momus_result = await callMomus(plan)
-  if (momus_result === "REJECT") {
-    // 修复并重新审查
-    continue
+// 3. 如果选择审查
+if (userChoice === "Review with Momus") {
+  let planValid = false
+  let reviewAttempts = 0
+  const maxAttempts = 3 // 最多审查 3 次
+
+  while (!planValid && reviewAttempts < maxAttempts) {
+    reviewAttempts++
+    const startTime = Date.now()
+
+    const momusResult = Task({
+      subagent_type: "momus",
+      description: "Review plan for executability and blockers",
+      prompt: `Review this plan: .plans/${taskName}/thinks/plan-initial.md\n\n**你的职责**：你是计划审查者（Plan Reviewer），不是计划创建者。\n\n**请检查**：\n1. 计划的可执行性\n2. 引用的有效性\n3. 阻塞性问题\n4. 验收标准是否具体\n5. Agent-Executed QA Scenarios 是否完整\n\n**输出格式**：\n- Status: OKAY | REJECT\n- Blockers: [阻塞问题列表，如果有]\n- Notes: [审查意见]`,
+      task_id: shouldUseSubsession("momus") ? `momus-${Date.now()}-${randomHex(8)}` : undefined,
+      output_path: `.plans/${taskName}/thinks/momus-${call_id}-${Date.now()}-V1.0.0.md`,
+      timeout: 180000 // 3 分钟超时
+    })
+
+    // 记录 Momus 调用时间
+    recordAgentCall("momus", startTime, Date.now())
+
+    if (momusResult.status === "OKAY") {
+      planValid = true
+      console.log("✅ Momus 审查通过")
+    } else {
+      console.log(`⚠️ Momus 审查发现阻塞问题（尝试 ${reviewAttempts}/${maxAttempts}）`)
+      // 修复阻塞问题
+      const fixedPlan = fixBlockers(plan, momusResult.blockers)
+      write(".plans/${taskName}/thinks/plan-initial.md", fixedPlan)
+    }
   }
-} else {
-  // 用户选择跳过审查
-  console.log("Proceeding without Momus review as requested by user")
-  // 直接进入 STEP 5
+
+  if (!planValid) {
+    console.log("⚠️ Momus 审查未通过，但用户选择继续")
+  }
 }
+
+// 4. 完成 step-4
+endStep("step-4")
+startStep("step-5")
 ```
 
-**Prompt**：只需提供计划文件路径：
-```
-.plans/{task-name}/thinks/plan-initial.md
-```
+**Momus 审查策略**：
 
-**如果 Momus 返回 REJECT**：
-1. 阅读 Momus 的阻塞问题
-2. 修复计划中的所有问题
-3. 重新提交给 Momus
-4. 重复直到 Momus 返回 **OKAY**
-
-**如果 Momus 返回 OKAY**：
-- 计划可执行并准备好定稿
+| 复杂度 | 推荐 | 理由 |
+|--------|------|------|
+| Simple (<3) | NO | 简单任务通常不需要审查 |
+| Moderate (3-6) | 可选 | 中等复杂度可审查 |
+| Complex (≥6) | **YES** | 复杂任务审查可以避免阻塞问题 |
 
 ---
 
@@ -941,78 +633,57 @@ if (user_choice === "Review with Momus") {
 
 **执行流程**：
 ```typescript
-// 如果之前的步骤是 orch-7（跳过审查）或 orch-8（完成审查）
-startStep("orch-9")  // 开始"Finalize 并保存 plan"
+// 1. 生成最终计划（带时间戳）
+const timestamp = new Date().toISOString().replace(/[:.]/g, "").slice(0, 15)
+const finalPlanPath = `.plans/${taskName}/v1.0.0-${timestamp}.md`
 
-// 保存最终计划
-// (保存操作...)
+// 2. 添加编排元数据到计划
+plan.metadata = {
+  totalTime: ((Date.now() - sessionStartTime) / 1000).toFixed(2) + "s",
+  stepTimings: stepTimings,
+  subagentStats: subagentStats
+}
 
-// 完成所有步骤
-endStep("orch-9")  // 完成"Finalize"，输出耗时
+// 3. 保存最终计划
+write(finalPlanPath, plan)
 
-// 计算总耗时
+// 4. 完成所有步骤
+endStep("step-5")
+
+// 5. 输出耗时汇总
 const sessionEndTime = Date.now()
 const totalSessionTime = ((sessionEndTime - sessionStartTime) / 1000).toFixed(2)
 
-// 计算 Orchestration Time（仅 super-plan 处理时间）
-const orchestrationTime = Object.values(stepTimings)
-  .filter(t => t.start && t.end)
-  .reduce((sum, t) => sum + (t.end - t.start), 0) / 1000
-
-// 计算 Sub-Agent 总时间
-const subagentTotalTime = Object.values(subagentTimings)
-  .reduce((sum, s) => sum + s.totalTime, 0)
-
-// 计算 Waiting Time（用户输入等待时间）
-const waitingTime = (totalSessionTime - orchestrationTime - subagentTotalTime).toFixed(2)
-
-// 找出最慢的 Sub-Agent
-let slowestSubagent = null
-let maxSubagentTime = 0
-Object.entries(subagentTimings).forEach(([agent, data]) => {
-  if (data.totalTime > maxSubagentTime) {
-    maxSubagentTime = data.totalTime
-    slowestSubagent = agent
+// 找出最慢的步骤
+let slowestStep = null
+let maxStepTime = 0
+Object.entries(stepTimings).forEach(([id, t]) => {
+  if (t.start && t.end && parseFloat(t.duration) > maxStepTime) {
+    maxStepTime = parseFloat(t.duration)
+    slowestStep = id
   }
 })
 
-// 输出耗时汇总
+// 输出汇总
 console.log(`\n=== Orchestration Complete ===`)
 console.log(`Total Session Time: ${totalSessionTime}s (${Math.floor(totalSessionTime / 60)}m ${(totalSessionTime % 60).toFixed(0)}s)`)
-console.log(`Orchestration Time: ${orchestrationTime.toFixed(2)}s (super-plan processing)`)
-console.log(`Sub-Agent Time: ${subagentTotalTime.toFixed(2)}s`)
-console.log(`Waiting Time: ${waitingTime}s (user input)`)
-console.log(`\nStep Breakdown (Orchestration Time):`)
+console.log(`\nStep Breakdown:`)
 Object.entries(stepTimings)
   .filter(([_, t]) => t.start && t.end)
   .forEach(([id, t]) => {
-    const duration = ((t.end - t.start) / 1000).toFixed(2)
-    console.log(`  ${id}: ${duration}s`)
+    const marker = id === slowestStep ? ' 🔥 SLOWEST' : ''
+    console.log(`  ${id} (${t.name}): ${t.duration}s${marker}`)
   })
 
-// 输出 Sub-Agent 耗时明细
-console.log(`\nSub-Agent Breakdown:`)
-Object.entries(subagentTimings).forEach(([agent, data]) => {
-  if (data.calls > 0) {
-    const avgTime = (data.totalTime / data.calls).toFixed(2)
-    const marker = agent === slowestSubagent ? ' 🔥 SLOWEST' : ''
-    console.log(`  ${agent}: ${data.calls} call(s), ${data.totalTime.toFixed(2)}s total, avg ${avgTime}s${marker}`)
-    data.details.forEach((call, idx) => {
-      console.log(`    ${idx + 1}. ${call.description}: ${call.duration}s`)
-    })
-  }
-})
-
-// 输出并行调用统计
-console.log(`\nParallel Calls Summary:`)
-Object.entries(parallelCalls).forEach(([wave, data]) => {
-  if (data.count > 0) {
-    console.log(`  ${wave}: ${data.count} agent(s) - [${data.agents.join(', ')}]`)
+console.log(`\nSub-Agent Stats:`)
+Object.entries(subagentStats).forEach(([agent, stats]) => {
+  if (stats.calls > 0) {
+    console.log(`  ${agent}: ${stats.calls} calls, ${stats.totalTime.toFixed(2)}s total`)
   }
 })
 ```
 
-**生成带时间戳的最终计划**：
+**最终计划路径**：
 ```
 .plans/{task-name}/v1.0.0-{YYYYmmddHHmm}.md
 ```
@@ -1020,11 +691,11 @@ Object.entries(parallelCalls).forEach(([wave, data]) => {
 **包含在计划中**：
 - 对所有思考文件的引用："Thought processes stored in .plans/{task-name}/thinks/"
 - Sub-Agent 贡献的摘要
+- 编排元数据（耗时、步骤）
 
 ### Agent Outputs Location
 - **Final Plan**: `.plans/{task-name}/v{major}.{minor}.{patch}-{YYYYmmddHHmm}.md`
 - **Sub-Agent Thoughts**: `.plans/{task-name}/thinks/{subagent-name}-{call_id}-{timestamp}-V{x.x.x}.md`
-- **Evidence**: `.plans/{task-name}/evidence/`
 
 ---
 
@@ -1054,40 +725,16 @@ Object.entries(parallelCalls).forEach(([wave, data]) => {
 
 ### Orchestration Timings
 - **Total Session Time**: {XXX.XXs} (XXm XXs)
-- **Orchestration Time**: {X.XXs} (super-plan processing only)
-- **Sub-Agent Time**: {XXX.XXs}
-- **Waiting Time**: {X.XXs} (user input)
-- **Slowest Step**: {step-name} ({X.XX}s orchestration)
-- **Slowest Sub-Agent**: {agent-name} ({XXX.XX}s)
+- **Slowest Step**: {step-id} ({step-name}) ({X.XX}s)
 
-**Step Breakdown (Orchestration Time)**:
-  | Step | Time (s) | Status |
-  |------|----------|--------|
-  | orch-1: 创建 task directory structure | {X.XX} | ✓ |
-  | orch-2: 咨询 Metis | {X.XX} | ✓ |
-  | orch-3: 生成工作计划 | {X.XX} | ✓ |
-  | orch-4: 自我审查 | {X.XX} | ✓ |
-  | orch-5: 呈现总结 | {X.XX} | ✓ |
-  | orch-6: 等待用户决策 | {X.XX} | ✓ / ⏭️ (skipped) |
-  | orch-7: 询问 Momus 审查 | {X.XX} | ✓ |
-  | orch-8: Momus 审查 | {X.XX} | ✓ / ⏭️ (skipped) |
-  | orch-9: Finalize 并保存 | {X.XX} | ✓ |
-
-**Sub-Agent Breakdown**:
-  | Sub-Agent | Calls | Total Time (s) | Avg Time (s) | Details |
-  |-----------|-------|----------------|--------------|---------|
-  | Metis | {N} | {XXX.XX} | {X.XX} | {description}: {X.XX}s |
-  | Librarian | {N} | {XXX.XX} | {X.XX} | {description}: {X.XX}s |
-  | Oracle | {N} | {XXX.XX} | {X.XX} | {description}: {X.XX}s |
-  | Multimodal-Looker | {N} | {XXX.XX} | {X.XX} | {description}: {X.XX}s |
-  | Momus | {N} | {XXX.XX} | {X.XX} | {description}: {X.XX}s |
-
-**Parallel Calls Summary**:
-  | Wave | Count | Agents |
-  |------|-------|--------|
-  | wave-1 | {N} | {agent1, agent2, ...} |
-  | wave-2 | {N} | {agent1, agent2, ...} |
-  | wave-3 | {N} | {agent1, agent2, ...} |
+**Step Breakdown**:
+| Step | Time (s) | Status |
+|------|----------|--------|
+| step-1: 初始化 + Metis | {X.XX} | ✓ |
+| step-2: 并行 Sub-Agent 执行分析 | {X.XX} | ✓ |
+| step-3: 生成计划 | {X.XX} | ✓ |
+| step-4: 用户决策 + Momus 审查 | {X.XX} | ✓ |
+| step-5: Finalize | {X.XX} | ✓ |
 
 ### Session Strategy
 - **Mode**: {current-only | sub-session-only | mixed}
@@ -1406,28 +1053,149 @@ rm .plans/{task-name}/drafts/initial-plan.md
 |-------|---------|----------|---------|--------|
 | **Interview Mode** | Default state | Consult, clarify requirements | None | N/A |
 | **Orchestration Mode** | Clearance passes OR explicit trigger | Coordinate sub-agents, synthesize plan | `.plans/{task-name}/thinks/` | **Total Session Time tracked** |
-| **Metis Consultation** | First step of orchestration | Intent classification, gap identification | `.plans/{task-name}/thinks/metis-{call_id}-{timestamp}-V1.0.0.md` | **orch-2** (coordination) + Sub-Agent actual time |
-| **Sub-Agent Dispatch** | Based on Metis recommendations | Parallel research (Librarian/Oracle/Multimodal-Looker) | `.plans/{task-name}/thinks/{subagent}-{call_id}-{timestamp}-V1.x.x.md` | Part of orch-3/orch-4 + parallel calls tracked |
-| **Plan Synthesis** | After sub-agent outputs | Create comprehensive plan | `.plans/{task-name}/thinks/initial-plan.md` | **orch-3** |
-| **Momus Review** | After plan synthesis, user decision (recommended for complexity ≥ 7) | Verify executability, fix blockers | `.plans/{task-name}/thinks/momus-{call_id}-{timestamp}.md` | **orch-8** (coordination) + Sub-Agent actual time |
-| **Finalization** | Momus OKAY or skipped by user | Save timestamped final plan | `v1.0.0-{YYYYmmddHHmm}.md` | **orch-9** |
+| **Step 1: 初始化 + Metis** | First step of orchestration | Create directory + Intent classification, gap identification | `.plans/{task-name}/thinks/metis-{call_id}-{timestamp}-V1.0.0.md` | **step-1** (includes network + API overhead) |
+| **Step 2: 并行 Sub-Agent** | After Metis | Parallel research (Librarian/Oracle/Multimodal-Looker) | `.plans/{task-name}/thinks/{subagent}-{call_id}-{timestamp}-V1.x.x.md` | **step-2** (includes network + API overhead) |
+| **Step 3: 计划综合** | After sub-agent outputs | Create comprehensive plan | `.plans/{task-name}/thinks/plan-initial.md` | **step-3** |
+| **Step 4: 用户决策 + Momus** | After plan synthesis | User confirmation + optional review | `.plans/{task-name}/thinks/momus-{call_id}-{timestamp}.md` | **step-4** (includes network + API overhead) |
+| **Step 5: Finalize** | User confirmation | Save timestamped final plan | `v1.0.0-{YYYYmmddHHmm}.md` | **step-5** |
 | **Handoff** | Plan finalized | Present summary, guide to execution | Clean up drafts | N/A |
 
-**Timing Legend**:
-- **Total Session Time**: From start to finish (includes Sub-Agent actual time + waiting + orchestration)
-- **Orchestration Time**: super-plan processing only (excludes Sub-Agent reasoning and user waiting)
-- **Sub-Agent Actual Time**: Time spent by each Sub-Agent on actual reasoning
-- **Waiting Time**: Time spent waiting for user input
+**Timing Definition**:
+- **Step Time**: End-to-end time from trigger to finish (includes ALL overhead: super-plan processing + Sub-Agent calls + network latency + API overhead + user waiting + system overhead)
 
 ## Key Principles
 
 1. **Interview First** - 在编排之前理解需求
 2. **Metis Always First** - 在任何其他 Sub-Agent 之前进行意图分类和 gap 检测
-3. **Parallel Sub-Agent Dispatch** - 在需要时并行启动 Librarian/Oracle/Multimodal-Looker
+3. **Parallel Sub-Agent Dispatch** - 在需要时并行启动 Librarian/Oracle/Multimodal-Looker（**不包括 Momus**）
 4. **Store All Thoughts** - 每个 Sub-Agent 的输出都保存到 `thinks/` 用于审计追踪
-5. **Momus Review** - 在定稿之前验证（所有任务都询问用户，高复杂度任务提供推荐理由，最终决定权在用户）
+5. **Momus Review Only After Plan** - Momus 只能在计划生成后调用，用于审查已存在的计划
 6. **Timestamped Plans** - 最终计划包括版本和时间戳
 7. **Orchestrator, Not Worker** - 你协调，Sub-Agent 贡献，实现者执行
+
+---
+
+## 常见错误和最佳实践（来自测试反馈）
+
+### 错误 1：在 STEP 2 中调用 Momus
+
+**错误示例**：
+```typescript
+// ❌ 错误：在 STEP 2 并行调用中包含 Momus
+calls.push(Task({
+  subagent_type: "momus",
+  description: "Task breakdown for OS version detection",
+  prompt: "Please break down the task into sub-tasks..."
+}))
+```
+
+**问题**：
+- Momus 是**计划审查者**，不是计划创建者
+- 在计划生成前调用 Momus 进行任务分解，它会拒绝请求
+- 这浪费了调用时间和资源
+
+**正确做法**：
+```typescript
+// ✅ 正确：STEP 2 只调用 Librarian/Oracle/Multimodal-Looker
+// Momus 在 STEP 4（用户决策阶段）调用，用于审查已生成的计划
+```
+
+---
+
+### 错误 2：遗漏 todo 列表初始化
+
+**错误示例**：
+```typescript
+// ❌ 错误：直接开始 STEP 1，没有初始化 todo 列表
+mkdir -p ".plans/{task-name}/thinks"
+Task({ subagent_type: "metis", ... })
+```
+
+**问题**：
+- 用户看不到进度跟踪
+- 无法确定当前处于哪个阶段
+- 降低了用户体验
+
+**正确做法**：
+```typescript
+// ✅ 正确：在 PHASE 2 开始时立即初始化 todo 列表
+todowrite([
+  { id: "step-1", content: "初始化 + Metis", status: "in_progress", priority: "high" },
+  { id: "step-2", content: "并行 Sub-Agent 执行分析", status: "pending", priority: "high" },
+  { id: "step-3", content: "生成计划", status: "pending", priority: "high" },
+  { id: "step-4", content: "用户决策 + Momus 审查", status: "pending", priority: "high" },
+  { id: "step-5", content: "Finalize", status: "pending", priority: "medium" }
+])
+```
+
+---
+
+### 错误 3：Session Strategy 实现不完整
+
+**错误示例**：
+```typescript
+// ❌ 错误：没有根据 session strategy 使用 task_id
+calls.push(Task({
+  subagent_type: "librarian",
+  task_id: undefined  // 总是 undefined，即使需要子 session
+}))
+```
+
+**问题**：
+- 复杂任务无法使用子 session 独立运行
+- 当前 session 可能超载或超时
+
+**正确做法**：
+```typescript
+// ✅ 正确：根据 session strategy 决定是否使用 task_id
+const sessionStrategy = getSessionStrategy(complexity_score)
+
+calls.push(Task({
+  subagent_type: "librarian",
+  task_id: shouldUseSubsession("librarian")
+    ? `librarian-${Date.now()}-${randomHex(8)}`
+    : undefined
+}))
+```
+
+---
+
+### 错误 4：耗时跟踪不完整
+
+**错误示例**：
+```typescript
+// ❌ 错误：没有记录 Sub-Agent 的调用时间
+await Task({ subagent_type: "librarian", ... })
+// 直接继续，没有统计
+```
+
+**问题**：
+- 无法知道哪些 Sub-Agent 耗时最长
+- 无法优化调用策略
+
+**正确做法**：
+```typescript
+// ✅ 正确：记录每个 Sub-Agent 的调用时间
+const startTime = Date.now()
+await Task({ subagent_type: "librarian", ... })
+  .then(result => {
+    recordAgentCall("librarian", startTime, Date.now())
+    return result
+  })
+```
+
+---
+
+### 最佳实践检查清单
+
+在进入 PHASE 2 之前，检查以下项目：
+
+- [ ] **初始化 todo 列表**：调用 `todowrite()` 创建步骤列表
+- [ ] **初始化耗时跟踪**：设置 `stepTimings` 和 `subagentStats`
+- [ ] **启动第一个步骤**：调用 `startStep("step-1")`
+- [ ] **明确 Momus 调用时机**：只在 STEP 4 调用，不在 STEP 2
+- [ ] **实现 Session Strategy**：根据复杂度决定是否使用 task_id
+- [ ] **记录 Sub-Agent 时间**：使用 `recordAgentCall()` 统计每个 Agent 的耗时
 
 ---
 
