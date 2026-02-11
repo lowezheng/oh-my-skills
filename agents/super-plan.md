@@ -55,17 +55,19 @@ permission:
 // call_id 优先使用 sub agent 的 session_id，否则使用当前 session id
 // 文件名格式：{agent_type}-{call_id}-{timestamp}.md
 // call_id 必须是 session_id（不含时间戳），用于中断回溯
+// 关键：子 session 的 task_id 应包含父 session 引用，以支持回溯
+const currentSessionId = "current-session" // 主 session ID
 const result = await Task({ ... })
-const session_id = result.task_id || result.session_id || "current-session"
+const session_id = result.task_id || result.session_id || currentSessionId
 const call_id = session_id
 const timestamp = Date.now()
 const path = `.plans/{task-name}/thinks/${agent_type}-${call_id}-${timestamp}.md`
 
 // 示例
-// 使用 sub session 时：.plans/{task-name}/thinks/metis-librarian-session-id-12345-1739234567890.md
+// 使用 sub session 时（包含父 session 引用）：.plans/{task-name}/thinks/librarian-current-session-1234567890-abc12345.md
 // 使用当前 session 时：.plans/{task-name}/thinks/oracle-current-session-1739234567890.md
 
-// 恢复时通过 call_id 查找所有相关文件
+// 恢复时通过 call_id 查找所有相关文件（支持子 session 回溯）
 const agentFiles = glob.sync(`.plans/${taskName}/thinks/${agent_type}-${call_id}-*.md`)
 // 按时间戳排序，取最新的
 const latestFile = agentFiles.sort().pop()
@@ -176,6 +178,16 @@ Task({
 使用 2 因子模型快速评估任务复杂度：
 
 ```python
+# 输入验证：确保参数为合法数值
+def validate_complexity_inputs(num_subtasks, needs_research):
+    if not isinstance(num_subtasks, (int, float)) or num_subtasks < 0:
+        raise ValueError("num_subtasks must be a non-negative number")
+    if needs_research not in [0, 1]:
+        raise ValueError("needs_research must be 0 or 1")
+    return num_subtasks, needs_research
+
+# 验证并计算复杂度评分
+num_subtasks, needs_research = validate_complexity_inputs(num_subtasks, needs_research)
 complexity_score = (
     num_subtasks * 1.0 +
     needs_research * 2.5
@@ -234,19 +246,19 @@ else:  # complexity_score >= 6
 
 | 复杂度 | Metis | Librarian | Oracle | Multimodal-Looker | Momus |
 |--------|-------|-----------|--------|-------------------|-------|
-| **Simple** (<3) | Current | Current | Current | Current | Current |
-| **Moderate** (3-6) | Current | **Sub** | **Sub** | Current | Current |
-| **Complex** (≥6) | Current | **Sub** | **Sub** | **Sub** | **Sub** |
+| **Simple** (<3) | current | current | current | current | current |
+| **Moderate** (3-6) | current | sub | sub | current | current |
+| **Complex** (≥6) | current | sub | sub | sub | sub |
 
 **会话策略函数实现**：
 ```typescript
 function getSessionStrategy(complexityScore) {
   if (complexityScore < 3) {
-    return { metis: "current", librarian: "current", oracle: "current", multimodal: "current", momus: "current" }
+    return { metis: "current", librarian: "current", oracle: "current", "multimodal-looker": "current", momus: "current" }
   } else if (complexityScore < 6) {
-    return { metis: "current", librarian: "sub", oracle: "sub", multimodal: "current", momus: "current" }
+    return { metis: "current", librarian: "sub", oracle: "sub", "multimodal-looker": "current", momus: "current" }
   } else {
-    return { metis: "current", librarian: "sub", oracle: "sub", multimodal: "sub", momus: "sub" }
+    return { metis: "current", librarian: "sub", oracle: "sub", "multimodal-looker": "sub", momus: "sub" }
   }
 }
 
@@ -360,6 +372,9 @@ let librarianCallIdHolder = null
 let oracleCallIdHolder = null
 let multimodalCallIdHolder = null
 let momusCallIdHolder = null
+
+// 初始化当前 session ID（用于子 session 引用）
+const currentSessionId = "current-session"
 
 // 3. 初始化 Sub-Agent 统计
 const subagentStats = {
@@ -509,15 +524,7 @@ const subagentStats = {
   "momus": { calls: 0, totalTime: 0 }
 }
 
-todoWrite([
-  { id: "step-1", content: "初始化 + Metis", status: "in_progress", priority: "high" },
-  { id: "step-2", content: "并行 Sub-Agent 执行分析", status: "pending", priority: "high" },
-  { id: "step-3", content: "生成计划", status: "pending", priority: "high" },
-  { id: "step-4", content: "用户决策 + Momus 审查", status: "pending", priority: "high" },
-  { id: "step-5", content: "Finalize", status: "pending", priority: "medium" }
-])
-
-startStep("step-1")
+// Todo 列表初始化见 PHASE 2 开始时的完整初始化代码（行 374-381）
 ```
 
 **每个步骤完成时必须执行**：
@@ -594,8 +601,8 @@ function parseMetisOutput(metisOutput) {
   }
 }
 
-// 解析 Metis 输出获取推荐调用的 Sub-Agent
-const metisOutput = read(`.plans/${taskName}/thinks/metis-${metisCallId}-*.md`)
+// 使用辅助函数获取最新的 Metis 输出（避免通配符匹配多个文件）
+const metisOutput = getLatestAgentOutput(taskName, "metis", metisCallId)
 
 // 从 Metis 输出中提取推荐
 const metisRecommendations = parseMetisOutput(metisOutput)
@@ -655,9 +662,14 @@ const recordAgentCall = (agentType, startTime, endTime) => {
 // 辅助函数：带超时的单个调用包装
 async function callAgentWithTimeout(agentType, taskConfig, timeoutMs, fallback) {
   const startTime = Date.now()
+  let callIdForFallback = null
+
   try {
     const result = await Promise.race([
-      Task(taskConfig),
+      Task(taskConfig).then(r => {
+        callIdForFallback = r.task_id || r.session_id || currentSessionId
+        return r
+      }),
       new Promise((_, reject) =>
         setTimeout(() => reject(new Error("TIMEOUT")), timeoutMs)
       )
@@ -672,8 +684,8 @@ async function callAgentWithTimeout(agentType, taskConfig, timeoutMs, fallback) 
     console.log(`⚠️ ${agentType} timed out after ${duration}s`)
 
     if (fallback) {
-      // 保存 fallback 输出
-      const fallbackCallId = "timeout-fallback"
+      // 使用有效的 session ID 作为 fallback call_id
+      const fallbackCallId = callIdForFallback || currentSessionId
       write(`.plans/${taskName}/thinks/${agentType}-${fallbackCallId}-${Date.now()}.md`,
             `# ${agentType} Timed Out\n\n**Fallback Output**:\n${JSON.stringify(fallback, null, 2)}`)
       return { success: false, fallback }
@@ -688,7 +700,7 @@ if (needsLibrarian) {
     subagent_type: "librarian",
     description: `Research for: ${task}`,
     prompt: `Research needed for: ${task}\n\n**需求上下文**：${interviewSummary}\n\n请提供：\n1. 官方文档链接\n2. 实现模式\n3. 最佳实践`,
-    task_id: shouldUseSubsession("librarian") ? `librarian-${Date.now()}-${randomHex(8)}` : undefined
+    task_id: shouldUseSubsession("librarian") ? `librarian-${currentSessionId}-${Date.now()}-${randomHex(8)}` : undefined
   }
 
   calls.push(callAgentWithTimeout("librarian", taskConfig, 300000, {
@@ -696,11 +708,13 @@ if (needsLibrarian) {
     notes: "Partial research due to timeout"
   }).then(({ success, result, fallback }) => {
     if (success) {
-      const librarianCallId = result.task_id || result.session_id || "current-session"
+      const librarianCallId = result.task_id || result.session_id || currentSessionId
       librarianCallIdHolder = librarianCallId // 保存 call_id 用于后续引用
       write(`.plans/${taskName}/thinks/librarian-${librarianCallId}-${Date.now()}.md`, result.output || JSON.stringify(result))
     } else {
-      librarianCallIdHolder = "timeout-fallback"
+      librarianCallIdHolder = `${currentSessionId}-timeout-fallback`
+      write(`.plans/${taskName}/thinks/librarian-${librarianCallIdHolder}-${Date.now()}.md`,
+            `# Librarian Timed Out\n\n**Fallback Output**:\n${JSON.stringify(fallback, null, 2)}`)
     }
     return { success, result, fallback }
   }))
@@ -712,19 +726,22 @@ if (needsOracle) {
     subagent_type: "oracle",
     description: `Architecture consultation for: ${task}`,
     prompt: `Architecture consultation needed for: ${task}\n\n**当前上下文**：${contextSummary}`,
-    task_id: shouldUseSubsession("oracle") ? `oracle-${Date.now()}-${randomHex(8)}` : undefined
+    task_id: shouldUseSubsession("oracle") ? `oracle-${currentSessionId}-${Date.now()}-${randomHex(8)}` : undefined
   }
 
   calls.push(callAgentWithTimeout("oracle", taskConfig, 300000, {
     recommended_agents: ["oracle"],
-    notes: "Partial architecture analysis due to timeout"
+    notes: "Partial architecture analysis due to timeout",
+    fallback_reason: "timeout"
   }).then(({ success, result, fallback }) => {
     if (success) {
-      const oracleCallId = result.task_id || result.session_id || "current-session"
+      const oracleCallId = result.task_id || result.session_id || currentSessionId
       oracleCallIdHolder = oracleCallId
       write(`.plans/${taskName}/thinks/oracle-${oracleCallId}-${Date.now()}.md`, result.output || JSON.stringify(result))
     } else {
-      oracleCallIdHolder = "timeout-fallback"
+      oracleCallIdHolder = `${currentSessionId}-timeout-fallback`
+      write(`.plans/${taskName}/thinks/oracle-${oracleCallIdHolder}-${Date.now()}.md`,
+            `# Oracle Timed Out\n\n**Fallback Output**:\n${JSON.stringify(fallback, null, 2)}`)
     }
     return { success, result, fallback }
   }))
@@ -736,19 +753,22 @@ if (needsMultimodal) {
     subagent_type: "multimodal-looker",
     description: `Media analysis for: ${task}`,
     prompt: `Analyze media files for: ${task}\n\n**任务上下文**：${interviewSummary}`,
-    task_id: shouldUseSubsession("multimodal") ? `multimodal-${Date.now()}-${randomHex(8)}` : undefined
+    task_id: shouldUseSubsession("multimodal-looker") ? `multimodal-looker-${currentSessionId}-${Date.now()}-${randomHex(8)}` : undefined
   }
 
   calls.push(callAgentWithTimeout("multimodal-looker", taskConfig, 300000, {
     recommended_agents: ["multimodal-looker"],
-    notes: "Media analysis failed due to timeout"
+    notes: "Media analysis failed due to timeout",
+    fallback_reason: "timeout"
   }).then(({ success, result, fallback }) => {
     if (success) {
-      const multimodalCallId = result.task_id || result.session_id || "current-session"
+      const multimodalCallId = result.task_id || result.session_id || currentSessionId
       multimodalCallIdHolder = multimodalCallId
       write(`.plans/${taskName}/thinks/multimodal-looker-${multimodalCallId}-${Date.now()}.md`, result.output || JSON.stringify(result))
     } else {
-      multimodalCallIdHolder = "timeout-fallback"
+      multimodalCallIdHolder = `${currentSessionId}-timeout-fallback`
+      write(`.plans/${taskName}/thinks/multimodal-looker-${multimodalCallIdHolder}-${Date.now()}.md`,
+            `# Multimodal-Looker Timed Out\n\n**Fallback Output**:\n${JSON.stringify(fallback, null, 2)}`)
     }
     return { success, result, fallback }
   }))
@@ -796,11 +816,11 @@ function getLatestAgentOutput(taskName, agentType, callId) {
   return read(latestFile)
 }
 
-// 1. 读取所有思考文件（使用之前保存的 call_id）
+// 1. 读取所有思考文件（只对实际调用的 agent 获取输出）
 const metisOutput = getLatestAgentOutput(taskName, "metis", metisCallId)
-const librarianOutput = needsLibrarian ? getLatestAgentOutput(taskName, "librarian", librarianCallIdHolder) : null
-const oracleOutput = needsOracle ? getLatestAgentOutput(taskName, "oracle", oracleCallIdHolder) : null
-const multimodalOutput = needsMultimodal ? getLatestAgentOutput(taskName, "multimodal-looker", multimodalCallIdHolder) : null
+const librarianOutput = (needsLibrarian && librarianCallIdHolder) ? getLatestAgentOutput(taskName, "librarian", librarianCallIdHolder) : null
+const oracleOutput = (needsOracle && oracleCallIdHolder) ? getLatestAgentOutput(taskName, "oracle", oracleCallIdHolder) : null
+const multimodalOutput = (needsMultimodal && multimodalCallIdHolder) ? getLatestAgentOutput(taskName, "multimodal-looker", multimodalCallIdHolder) : null
 
 // 2. 综合洞察并生成计划
 const plan = synthesizePlan({
@@ -873,12 +893,13 @@ if (userChoice === "Review with Momus") {
       subagent_type: "momus",
       description: "Review plan for executability and blockers",
       prompt: `Review this plan: ${planPath}\n\n**你的职责**：你是计划审查者（Plan Reviewer），不是计划创建者。\n\n**请检查**：\n1. 计划的可执行性\n2. 引用的有效性\n3. 阻塞性问题\n4. 验收标准是否具体\n5. Agent-Executed QA Scenarios 是否完整\n\n**输出格式**：\n- Status: OKAY | REJECT\n- Blockers: [阻塞问题列表，如果有]\n- Notes: [审查意见]`,
-      task_id: shouldUseSubsession("momus") ? `momus-${Date.now()}-${randomHex(8)}` : undefined,
+      task_id: shouldUseSubsession("momus") ? `momus-${currentSessionId}-${Date.now()}-${randomHex(8)}` : undefined,
       timeout: 180000 // 3 分钟超时
     })
 
     // 使用 session_id 作为 call_id 保存输出
-    const momusCallId = momusResult.task_id || momusResult.session_id || "current-session"
+    const momusCallId = momusResult.task_id || momusResult.session_id || currentSessionId
+    momusCallIdHolder = momusCallId // 保存到全局变量
     const momusOutputPath = `.plans/${taskName}/thinks/momus-${momusCallId}-${Date.now()}.md`
     write(momusOutputPath, momusResult.output || JSON.stringify(momusResult))
 
@@ -966,7 +987,7 @@ plan.metadata = {
     librarian: needsLibrarian ? librarianCallIdHolder : null,
     oracle: needsOracle ? oracleCallIdHolder : null,
     multimodal: needsMultimodal ? multimodalCallIdHolder : null,
-    momus: momusCallId
+    momus: momusCallIdHolder
   }
 }
 
