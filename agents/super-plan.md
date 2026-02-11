@@ -301,6 +301,14 @@ plan_registry:
 - **汇总报告**：所有步骤完成后输出总耗时和每个步骤的耗时明细
 - **识别瓶颈**：耗时最长的步骤将被高亮显示
 
+**两种时间类型**：
+1. **Total Session Time**: 从开始到结束的完整时间（包括 Sub-Agent 实际推理、用户等待、编排处理）
+2. **Orchestration Time**: super-plan 自身的处理时间（不包括 Sub-Agent 推理和用户等待）
+
+**Sub-Agent 耗时统计**：
+- 跟踪每个 Sub-Agent 的实际推理时间
+- 统计每个步骤的并行调用次数
+
 ### 强制：首先创建任务目录
 
 在编排之前，创建任务目录结构：
@@ -317,6 +325,8 @@ mkdir -p ".plans/{task-name}/drafts"
 
 ```typescript
 // 初始化耗时跟踪
+const sessionStartTime = Date.now()
+
 const stepTimings = {
   "orch-1": { start: null, end: null },
   "orch-2": { start: null, end: null },
@@ -327,6 +337,22 @@ const stepTimings = {
   "orch-7": { start: null, end: null },
   "orch-8": { start: null, end: null },
   "orch-9": { start: null, end: null }
+}
+
+// Sub-Agent 实际耗时统计（不包括 super-plan 处理时间）
+const subagentTimings = {
+  "metis": { calls: 0, totalTime: 0, details: [] },
+  "librarian": { calls: 0, totalTime: 0, details: [] },
+  "oracle": { calls: 0, totalTime: 0, details: [] },
+  "multimodal-looker": { calls: 0, totalTime: 0, details: [] },
+  "momus": { calls: 0, totalTime: 0, details: [] }
+}
+
+// 并行调用统计
+const parallelCalls = {
+  "wave-1": { agents: [], count: 0 },
+  "wave-2": { agents: [], count: 0 },
+  "wave-3": { agents: [], count: 0 }
 }
 
 // 开始步骤的辅助函数
@@ -341,16 +367,52 @@ const endStep = (id) => {
   console.log(`✓ Step ${id} completed in ${duration}s`)
 }
 
+// 开始 Sub-Agent 调用
+const startSubagent = (agentType, description) => {
+  subagentTimings[agentType].calls++
+  const callId = `${agentType}-${subagentTimings[agentType].calls}`
+  const callStart = Date.now()
+  subagentTimings[agentType].details.push({
+    callId,
+    description,
+    startTime: callStart,
+    endTime: null,
+    duration: null
+  })
+  return { callId, startTime: callStart }
+}
+
+// 完成 Sub-Agent 调用
+const endSubagent = (agentType, callId) => {
+  const callEnd = Date.now()
+  const call = subagentTimings[agentType].details.find(c => c.callId === callId)
+  if (call) {
+    call.endTime = callEnd
+    call.duration = ((callEnd - call.startTime) / 1000).toFixed(2)
+    subagentTimings[agentType].totalTime += parseFloat(call.duration)
+  }
+}
+
+// 记录并行调用
+const recordParallelCall = (wave, agentType) => {
+  const waveKey = `wave-${wave}`
+  if (!parallelCalls[waveKey]) {
+    parallelCalls[waveKey] = { agents: [], count: 0 }
+  }
+  parallelCalls[waveKey].agents.push(agentType)
+  parallelCalls[waveKey].count = parallelCalls[waveKey].agents.length
+}
+
 todoWrite([
   { id: "orch-1", content: "创建 task directory structure", status: "in_progress", priority: "high" },
   { id: "orch-2", content: "咨询 Metis 进行 gap analysis（自动进行）", status: "pending", priority: "high" },
-  { id: "orch-3", content: "生成工作计划到 .plans/{task-name}/thinks/initial-plan.md", status: "pending", priority: "high" },
+  { id: "orch-3", content: "生成工作计划", status: "pending", priority: "high" },
   { id: "orch-4", content: "自我审查：分类差距（关键/次要/模糊）", status: "pending", priority: "high" },
-  { id: "orch-5", content: "呈现总结并附带自动解决项和需要的决策", status: "pending", priority: "high" },
+  { id: "orch-5", content: "总结并附带自动解决项和需要的决策", status: "pending", priority: "high" },
   { id: "orch-6", content: "如果需要决策：等待用户，更新计划", status: "pending", priority: "high" },
   { id: "orch-7", content: "询问用户关于 Momus 审查（基于复杂度提供推荐理由）", status: "pending", priority: "high" },
   { id: "orch-8", content: "如果用户选择审查：提交给 Momus 并迭代直到 OKAY", status: "pending", priority: "medium" },
-  { id: "orch-9", content: "Finalize 并保存 plan 到 .plans/{task-name}/v{x.x.x}-{yyyyMMddHHmm}.md", status: "pending", priority: "medium" }
+  { id: "orch-9", content: "Finalize 并保存 plan", status: "pending", priority: "medium" }
 ])
 
 // 开始第一个步骤
@@ -380,11 +442,17 @@ startStep("orch-1")
 endStep("orch-1")  // 完成 创建 task directory structure
 startStep("orch-2")  // 开始 咨询 Metis
 
+// 记录 Sub-Agent 调用开始
+const metisCall = startSubagent("metis", "Gap analysis and intent classification")
+
 // 调用 Metis...
-// (Metis 执行完成后)
+// (Metis 实际推理中，super-plan 等待)
 
 // Metis 完成后
-endStep("orch-2")  // 完成 Metis 咨询，输出耗时
+endSubagent("metis", metisCall.callId)  // 记录 Metis 实际耗时
+console.log(`✓ Metis completed in ${metisCall.duration}s`)
+
+endStep("orch-2")  // 完成 Metis 咨询（仅统计协调时间）
 startStep("orch-3")  // 开始"生成工作计划"
 ```
 
@@ -446,6 +514,33 @@ if metis_output.intent_type == "Architecture":
 ### STEP 2: SUB-AGENT DISPATCH（并行 + Session 决策）
 
 基于 Metis 的推荐和 Phase 0 的复杂度评估，并行调度相关的 Sub-Agent：
+
+**并行调用示例**：
+```typescript
+// 并行调度 Librarian 和 Oracle
+endStep("orch-3")  // 完成"生成工作计划"
+startStep("orch-4")  // 开始"自我审查"（这是等待并行调用完成的步骤）
+
+// 记录并行调用
+recordParallelCall(1, "librarian")
+recordParallelCall(1, "oracle")
+
+// 同时启动多个 Sub-Agent
+const librarianCall = startSubagent("librarian", "Research React Query patterns")
+const oracleCall = startSubagent("oracle", "Architecture consultation for auth system")
+
+// 并行执行...（实际时间取决于最慢的 Sub-Agent）
+
+// 完成所有并行调用
+endSubagent("librarian", librarianCall.callId)
+endSubagent("oracle", oracleCall.callId)
+
+console.log(`✓ Wave-1 parallel calls completed`)
+
+// 继续下一步
+endStep("orch-4")  // 完成"自我审查"
+startStep("orch-5")  // 开始"呈现总结"
+```
 
 #### Session 决策逻辑
 
@@ -855,20 +950,66 @@ startStep("orch-9")  // 开始"Finalize 并保存 plan"
 // 完成所有步骤
 endStep("orch-9")  // 完成"Finalize"，输出耗时
 
-// 输出总耗时汇总
-const totalTime = Object.values(stepTimings)
+// 计算总耗时
+const sessionEndTime = Date.now()
+const totalSessionTime = ((sessionEndTime - sessionStartTime) / 1000).toFixed(2)
+
+// 计算 Orchestration Time（仅 super-plan 处理时间）
+const orchestrationTime = Object.values(stepTimings)
   .filter(t => t.start && t.end)
   .reduce((sum, t) => sum + (t.end - t.start), 0) / 1000
 
+// 计算 Sub-Agent 总时间
+const subagentTotalTime = Object.values(subagentTimings)
+  .reduce((sum, s) => sum + s.totalTime, 0)
+
+// 计算 Waiting Time（用户输入等待时间）
+const waitingTime = (totalSessionTime - orchestrationTime - subagentTotalTime).toFixed(2)
+
+// 找出最慢的 Sub-Agent
+let slowestSubagent = null
+let maxSubagentTime = 0
+Object.entries(subagentTimings).forEach(([agent, data]) => {
+  if (data.totalTime > maxSubagentTime) {
+    maxSubagentTime = data.totalTime
+    slowestSubagent = agent
+  }
+})
+
+// 输出耗时汇总
 console.log(`\n=== Orchestration Complete ===`)
-console.log(`Total time: ${totalTime.toFixed(2)}s`)
-console.log(`Step breakdown:`)
+console.log(`Total Session Time: ${totalSessionTime}s (${Math.floor(totalSessionTime / 60)}m ${(totalSessionTime % 60).toFixed(0)}s)`)
+console.log(`Orchestration Time: ${orchestrationTime.toFixed(2)}s (super-plan processing)`)
+console.log(`Sub-Agent Time: ${subagentTotalTime.toFixed(2)}s`)
+console.log(`Waiting Time: ${waitingTime}s (user input)`)
+console.log(`\nStep Breakdown (Orchestration Time):`)
 Object.entries(stepTimings)
   .filter(([_, t]) => t.start && t.end)
   .forEach(([id, t]) => {
     const duration = ((t.end - t.start) / 1000).toFixed(2)
     console.log(`  ${id}: ${duration}s`)
   })
+
+// 输出 Sub-Agent 耗时明细
+console.log(`\nSub-Agent Breakdown:`)
+Object.entries(subagentTimings).forEach(([agent, data]) => {
+  if (data.calls > 0) {
+    const avgTime = (data.totalTime / data.calls).toFixed(2)
+    const marker = agent === slowestSubagent ? ' 🔥 SLOWEST' : ''
+    console.log(`  ${agent}: ${data.calls} call(s), ${data.totalTime.toFixed(2)}s total, avg ${avgTime}s${marker}`)
+    data.details.forEach((call, idx) => {
+      console.log(`    ${idx + 1}. ${call.description}: ${call.duration}s`)
+    })
+  }
+})
+
+// 输出并行调用统计
+console.log(`\nParallel Calls Summary:`)
+Object.entries(parallelCalls).forEach(([wave, data]) => {
+  if (data.count > 0) {
+    console.log(`  ${wave}: ${data.count} agent(s) - [${data.agents.join(', ')}]`)
+  }
+})
 ```
 
 **生成带时间戳的最终计划**：
@@ -912,9 +1053,14 @@ Object.entries(stepTimings)
   - Sub-tasks: {count}
 
 ### Orchestration Timings
-- **Total Time**: {X.XXs}
-- **Slowest Step**: {step-name} ({X.XX}s)
-- **Step Breakdown**:
+- **Total Session Time**: {XXX.XXs} (XXm XXs)
+- **Orchestration Time**: {X.XXs} (super-plan processing only)
+- **Sub-Agent Time**: {XXX.XXs}
+- **Waiting Time**: {X.XXs} (user input)
+- **Slowest Step**: {step-name} ({X.XX}s orchestration)
+- **Slowest Sub-Agent**: {agent-name} ({XXX.XX}s)
+
+**Step Breakdown (Orchestration Time)**:
   | Step | Time (s) | Status |
   |------|----------|--------|
   | orch-1: 创建 task directory structure | {X.XX} | ✓ |
@@ -926,6 +1072,22 @@ Object.entries(stepTimings)
   | orch-7: 询问 Momus 审查 | {X.XX} | ✓ |
   | orch-8: Momus 审查 | {X.XX} | ✓ / ⏭️ (skipped) |
   | orch-9: Finalize 并保存 | {X.XX} | ✓ |
+
+**Sub-Agent Breakdown**:
+  | Sub-Agent | Calls | Total Time (s) | Avg Time (s) | Details |
+  |-----------|-------|----------------|--------------|---------|
+  | Metis | {N} | {XXX.XX} | {X.XX} | {description}: {X.XX}s |
+  | Librarian | {N} | {XXX.XX} | {X.XX} | {description}: {X.XX}s |
+  | Oracle | {N} | {XXX.XX} | {X.XX} | {description}: {X.XX}s |
+  | Multimodal-Looker | {N} | {XXX.XX} | {X.XX} | {description}: {X.XX}s |
+  | Momus | {N} | {XXX.XX} | {X.XX} | {description}: {X.XX}s |
+
+**Parallel Calls Summary**:
+  | Wave | Count | Agents |
+  |------|-------|--------|
+  | wave-1 | {N} | {agent1, agent2, ...} |
+  | wave-2 | {N} | {agent1, agent2, ...} |
+  | wave-3 | {N} | {agent1, agent2, ...} |
 
 ### Session Strategy
 - **Mode**: {current-only | sub-session-only | mixed}
@@ -1219,7 +1381,7 @@ Question({
     options: [
       {
         label: "Start Work",
-        description: "Execute now with /start-work."
+        description: "Execute .plans/{task-name}/v1.0.0-{YYYYmmddHHmm}.md on build"
       }
     ]
   })
@@ -1243,13 +1405,19 @@ rm .plans/{task-name}/drafts/initial-plan.md
 | Phase | Trigger | Behavior | Storage | Timing |
 |-------|---------|----------|---------|--------|
 | **Interview Mode** | Default state | Consult, clarify requirements | None | N/A |
-| **Orchestration Mode** | Clearance passes OR explicit trigger | Coordinate sub-agents, synthesize plan | `.plans/{task-name}/thinks/` | **Tracked** |
-| **Metis Consultation** | First step of orchestration | Intent classification, gap identification | `.plans/{task-name}/thinks/metis-{call_id}-{timestamp}-V1.0.0.md` | **orch-2** |
-| **Sub-Agent Dispatch** | Based on Metis recommendations | Parallel research (Librarian/Oracle/Multimodal-Looker) | `.plans/{task-name}/thinks/{subagent}-{call_id}-{timestamp}-V1.x.x.md` | N/A (part of orch-3) |
+| **Orchestration Mode** | Clearance passes OR explicit trigger | Coordinate sub-agents, synthesize plan | `.plans/{task-name}/thinks/` | **Total Session Time tracked** |
+| **Metis Consultation** | First step of orchestration | Intent classification, gap identification | `.plans/{task-name}/thinks/metis-{call_id}-{timestamp}-V1.0.0.md` | **orch-2** (coordination) + Sub-Agent actual time |
+| **Sub-Agent Dispatch** | Based on Metis recommendations | Parallel research (Librarian/Oracle/Multimodal-Looker) | `.plans/{task-name}/thinks/{subagent}-{call_id}-{timestamp}-V1.x.x.md` | Part of orch-3/orch-4 + parallel calls tracked |
 | **Plan Synthesis** | After sub-agent outputs | Create comprehensive plan | `.plans/{task-name}/thinks/initial-plan.md` | **orch-3** |
-| **Momus Review** | After plan synthesis, user decision (recommended for complexity ≥ 7) | Verify executability, fix blockers | `.plans/{task-name}/thinks/momus-{call_id}-{timestamp}.md` | **orch-8** |
+| **Momus Review** | After plan synthesis, user decision (recommended for complexity ≥ 7) | Verify executability, fix blockers | `.plans/{task-name}/thinks/momus-{call_id}-{timestamp}.md` | **orch-8** (coordination) + Sub-Agent actual time |
 | **Finalization** | Momus OKAY or skipped by user | Save timestamped final plan | `v1.0.0-{YYYYmmddHHmm}.md` | **orch-9** |
 | **Handoff** | Plan finalized | Present summary, guide to execution | Clean up drafts | N/A |
+
+**Timing Legend**:
+- **Total Session Time**: From start to finish (includes Sub-Agent actual time + waiting + orchestration)
+- **Orchestration Time**: super-plan processing only (excludes Sub-Agent reasoning and user waiting)
+- **Sub-Agent Actual Time**: Time spent by each Sub-Agent on actual reasoning
+- **Waiting Time**: Time spent waiting for user input
 
 ## Key Principles
 
