@@ -377,8 +377,8 @@ startStep("orch-1")
 **执行流程**：
 ```typescript
 // 在调用 Metis 之前
-endStep("orch-1")  // 完成"创建 task directory structure"
-startStep("orch-2")  // 开始"咨询 Metis"
+endStep("orch-1")  // 完成 创建 task directory structure
+startStep("orch-2")  // 开始 咨询 Metis
 
 // 调用 Metis...
 // (Metis 执行完成后)
