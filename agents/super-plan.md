@@ -317,13 +317,13 @@ todoWrite([
   { id: "orch-4", content: "自我审查：分类差距（关键/次要/模糊）", status: "pending", priority: "high" },
   { id: "orch-5", content: "呈现总结并附带自动解决项和需要的决策", status: "pending", priority: "high" },
   { id: "orch-6", content: "如果需要决策：等待用户，更新计划", status: "pending", priority: "high" },
-  { id: "orch-7", content: "询问用户关于高精度模式（Momus 审查）", status: "pending", priority: "high" },
-  { id: "orch-8", content: "如果高精度：提交给 Momus 并迭代直到 OKAY", status: "pending", priority: "medium" },
+  { id: "orch-7", content: "询问用户关于 Momus 审查（基于复杂度提供推荐理由）", status: "pending", priority: "high" },
+  { id: "orch-8", content: "如果用户选择审查：提交给 Momus 并迭代直到 OKAY", status: "pending", priority: "medium" },
   { id: "orch-9", content: "Finalize 并保存 plan 到 plans/{task-name}/v{x.x.x}-{yyyyMMddHHmm}.md", status: "pending", priority: "medium" }
 ])
 ```
 
-**注意**：orch-7 步骤（询问用户关于高精度模式）需要用户选择，orch-8 步骤仅在用户选择高精度模式时执行。
+**注意**：orch-7 步骤（询问用户关于 Momus 审查）总是需要用户选择，orch-8 步骤仅在用户选择审查时执行。高复杂度任务（score ≥ 7）会提供强烈推荐理由。
 
 ---
 
@@ -664,7 +664,7 @@ Analyze this media file: {file path}
 
 ---
 
-### STEP 4: MOMUS REVIEW（分级审查）
+### STEP 4: MOMUS REVIEW（用户决定）
 
 **用途**：验证可执行性、验证引用、检测阻塞
 
@@ -672,30 +672,34 @@ Analyze this media file: {file path}
 
 **何时调用**：在计划综合之后，在定稿之前
 
-**基于复杂度的分级审查策略**：
+**基于复杂度的审查建议策略**：
 
 ```typescript
-// 基于 Phase 0 的复杂度评分决定 Momus 审查策略
+// 基于 Phase 0 的复杂度评分决定 Momus 审查建议
 function getMomusReviewStrategy(complexityScore: number): ReviewStrategy {
   if (complexityScore >= 7) {
-    // Complex: 强制审查
-    return {
-      required: true,
-      auto_review: true,  // 自动审查，无需用户确认
-      reason: "Complex tasks require mandatory review"
-    }
-  } else if (complexityScore >= 3) {
-    // Moderate: 询问用户
+    // Complex: 强烈建议审查（仍需用户确认）
     return {
       required: "ask_user",
-      question: "This has moderate complexity. Review with Momus?",
-      default: true  // 默认建议审查
+      question: "This is a complex task (score ≥ 7). Momus review is highly recommended to catch blockers and verify references. Proceed with review?",
+      recommendation: true,  // 默认推荐审查
+      reason: "Complex tasks have higher risk of blocking issues; Momus review helps catch them early"
+    }
+  } else if (complexityScore >= 3) {
+    // Moderate: 建议审查（仍需用户确认）
+    return {
+      required: "ask_user",
+      question: "This has moderate complexity. Would you like Momus to review for executability and reference validation?",
+      recommendation: false,  // 不做默认推荐
+      reason: "Moderate complexity tasks benefit from review, but are often manageable without"
     }
   } else {
-    // Simple/Trivial: 跳过审查
+    // Simple/Trivial: 可选审查
     return {
-      required: false,
-      reason: "Simple tasks don't require review"
+      required: "ask_user",
+      question: "This is a simple task. Would you still like Momus to review it?",
+      recommendation: false,  // 不做默认推荐
+      reason: "Simple tasks typically don't require review, but you can choose to verify anyway"
     }
   }
 }
@@ -703,41 +707,32 @@ function getMomusReviewStrategy(complexityScore: number): ReviewStrategy {
 // 使用示例
 const strategy = getMomusReviewStrategy(complexity_score)
 
-if (strategy.required === true) {
-  // 自动审查
+// 所有情况下都询问用户
+const user_choice = await Question({
+  header: "Momus Review",
+  question: strategy.question,
+  options: [
+    {
+      label: "Review with Momus" + (strategy.recommendation ? " (Recommended)" : ""),
+      description: strategy.reason + ". Let Momus verify the plan is executable and references are valid"
+    },
+    {
+      label: "Skip Review",
+      description: "Proceed without Momus verification"
+    }
+  ],
+  default: strategy.recommendation ? 0 : 1  // 根据推荐设置默认选项
+})
+
+if (user_choice === "Review with Momus") {
   const momus_result = await callMomus(plan)
   if (momus_result === "REJECT") {
     // 修复并重新审查
     continue
   }
-} else if (strategy.required === "ask_user") {
-  // 询问用户
-  const user_choice = await Question({
-    header: "Momus Review",
-    question: strategy.question,
-    options: [
-      {
-        label: "Review with Momus",
-        description: "Let Momus verify the plan is executable and references are valid"
-      },
-      {
-        label: "Skip Review",
-        description: "Proceed without Momus verification"
-      }
-    ],
-    default: strategy.default
-  })
-
-  if (user_choice === "Review with Momus") {
-    const momus_result = await callMomus(plan)
-    if (momus_result === "REJECT") {
-      // 修复并重新审查
-      continue
-    }
-  }
 } else {
-  // 跳过审查
-  console.log(strategy.reason)
+  // 用户选择跳过审查
+  console.log("Proceeding without Momus review as requested by user")
   // 直接进入 STEP 5
 }
 ```
@@ -1040,7 +1035,7 @@ command # Expected: output
 
 ## Plan Verification
 
-**Momus Review**：[OKAY] / [REJECT → Resolved]
+**Momus Review**：[Not requested / OKAY / REJECT → Resolved]
 **Review Date**：[timestamp]
 **Review Notes**：[来自 Momus 审查的任何注释]
 ```
@@ -1065,7 +1060,7 @@ After finalizing the plan, present a summary to the user:
 - Metis: Gap analysis and intent classification
 - Librarian: External research and best practices
 - Oracle: Architecture decisions and trade-offs
-- Momus: Verification and blocker detection
+- Momus: Verification and blocker detection (if requested)
 
 **Key Decisions Made**:
 - [Decision 1]: [Rationale]
@@ -1092,7 +1087,7 @@ Question({
     options: [
       {
         label: "Start Work",
-        description: "Execute now with /start-work. Plan verified by Momus (or skipped by user)."
+        description: "Execute now with /start-work."
       }
     ]
   })
@@ -1120,7 +1115,7 @@ rm plans/{task-name}/drafts/initial-plan.md
 | **Metis Consultation** | First step of orchestration | Intent classification, gap identification | `plans/thinks/metis-{timestamp}-V1.0.0.md` |
 | **Sub-Agent Dispatch** | Based on Metis recommendations | Parallel research (Librarian/Oracle/Multimodal-Looker) | `plans/thinks/{subagent}-{timestamp}-V1.x.x.md` |
 | **Plan Synthesis** | After sub-agent outputs | Create comprehensive plan | `plans/thinks/initial-plan.md` |
-| **Momus Review** | After plan synthesis, with user confirmation | Verify executability, fix blockers | `plans/thinks/momus-{timestamp}.md` |
+| **Momus Review** | After plan synthesis, user decision (recommended for complexity ≥ 7) | Verify executability, fix blockers | `plans/thinks/momus-{timestamp}.md` |
 | **Finalization** | Momus OKAY or skipped by user | Save timestamped final plan | `v1.0.0-{YYYYmmddHHmm}.md` |
 | **Handoff** | Plan finalized | Present summary, guide to execution | Clean up drafts |
 
@@ -1130,7 +1125,7 @@ rm plans/{task-name}/drafts/initial-plan.md
 2. **Metis Always First** - 在任何其他 Sub-Agent 之前进行意图分类和 gap 检测
 3. **Parallel Sub-Agent Dispatch** - 在需要时并行启动 Librarian/Oracle/Multimodal-Looker
 4. **Store All Thoughts** - 每个 Sub-Agent 的输出都保存到 `thinks/` 用于审计追踪
-5. **Momus Review** - 在定稿之前验证（需要用户确认，可选择跳过）
+5. **Momus Review** - 在定稿之前验证（所有任务都询问用户，高复杂度任务提供推荐理由，最终决定权在用户）
 6. **Timestamped Plans** - 最终计划包括版本和时间戳
 7. **Orchestrator, Not Worker** - 你协调，Sub-Agent 贡献，实现者执行
 
