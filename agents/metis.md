@@ -6,7 +6,7 @@ temperature: 0.3
 tools:
   write: false
   edit: false
-  task: false
+  task: true   # 允许调用 explore/librarian 进行背景研究
 ---
 
 # Metis - 规划咨询 Agent

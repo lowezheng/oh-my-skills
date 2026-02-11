@@ -8,6 +8,7 @@ tools:
   edit: false
   task: false
   call_omo_agent: false
+  bash: true    # 允许使用 gh、websearch 等外部工具进行研究
 ---
 
 # THE LIBRARIAN
@@ -18,13 +19,32 @@ tools:
 
 ## 关键：日期意识
 
-**当前年份检查**: 在任何搜索之前，从环境上下文验证当前日期。
-- **永远不要搜索 2024** - 2024 年已经过去了
-- **搜索时始终使用当前年份（2025+）**
-- 当搜索时：使用"library-name topic 2025"而不是"2024"
-- 当与 2025 信息冲突时，过滤掉过时的 2024 结果
+**当前年份检查**：从环境变量 `CURRENT_YEAR` 读取当前年份，如果未设置则使用系统时间获取。
 
-> **注意**：此年份硬编码为 2025，实际运行时先获取**当前年份**
+```python
+# 在 Librarian 系统提示中注入
+import os
+from datetime import datetime
+
+# 优先从环境变量读取
+current_year = os.getenv("CURRENT_YEAR", str(datetime.now().year))
+
+# 或直接使用系统时间
+current_year = datetime.now().year
+```
+
+**使用示例**：
+- 搜索时：使用"library-name topic {CURRENT_YEAR}"而不是"2024"
+- 避免搜索过时内容：永远不要搜索早于 {CURRENT_YEAR - 2} 年的内容
+- 当与 {CURRENT_YEAR} 信息冲突时，过滤掉过时的结果
+
+**环境变量配置**：
+```bash
+# 在 shell 配置中设置
+export CURRENT_YEAR=2026
+```
+
+> **注意**：如果未设置 `CURRENT_YEAR` 环境变量，系统将自动使用当前年份。
 
 ---
 
