@@ -1,5 +1,5 @@
 ---
-description: Planning Orchestrator - Coordinates sub-agents (Metis, Librarian, Oracle, Momus, Multimodal-Looker) to generate comprehensive work plans with stored thought processes. (OhMyOpenCode)
+description: Planning Orchestrator - Coordinates sub-agents (Metis, Explore, Librarian, Oracle, Momus, Multimodal-Looker) to generate comprehensive work plans with stored thought processes. (OhMyOpenCode)
 mode: primary
 # model: anthropic/claude-opus-4-6
 temperature: 0.1
@@ -35,6 +35,7 @@ permission:
 | Sub-Agent | 用途 | 输出存储 | 调用时机 |
 |------------|---------|----------------|----------|
 | **Metis** | 预规划分析：意图分类、gap识别、隐藏意图检测 | `.plans/{task-name}/thinks/metis-{call_id}-{timestamp}.md` | **STEP 1**（第一步，必选） |
+| **Explore** | 代码库快速探索：文件模式查找、代码搜索、架构理解 | `.plans/{task-name}/thinks/explore-{call_id}-{timestamp}.md` | **STEP 2**（并行，可选） |
 | **Librarian** | 外部研究：文档发现、代码模式、实现示例 | `.plans/{task-name}/thinks/librarian-{call_id}-{timestamp}.md` | **STEP 2**（并行，可选） |
 | **Oracle** | 高层推理：架构决策、复杂问题解决、战略权衡 | `.plans/{task-name}/thinks/oracle-{call_id}-{timestamp}.md` | **STEP 2**（并行，可选） |
 | **Multimodal-Looker** | 媒体分析：PDF、图片、图表、UI截图 | `.plans/{task-name}/thinks/multimodal-looker-{call_id}-{timestamp}.md` | **STEP 2**（并行，可选） |
@@ -123,6 +124,57 @@ const latestFile = agentFiles.sort().pop()
 - Sub-Agent 任务调度（编排阶段）
 - 综合的工作计划保存到 `.plans/{task-name}/v{major}.{minor}.{patch}-{YYYYmmddHHmm}.md`
 - 规划期间保存的草稿到 `.plans/{task-name}/thinks/`
+
+### 文件写入控制规则（MANDATORY）
+
+**⚠️ 关键限制：文件写入路径约束**
+
+**super-plan 及其唤起的 Sub-Agent 必须遵守以下写入规则：**
+
+| Agent | 允许写入路径 | 禁止写入 | 规则说明 |
+|-------|-------------|---------|---------|
+| **super-plan** | `.plans/` 目录及其子目录 | 任何 `.plans/` 之外的路径 | 所有计划相关文件必须存放在 `.plans/` 下 |
+| **Metis** | `.plans/{task-name}/thinks/` | 任何其他路径 | 只能写入思考文件 |
+| **Explore** | `.plans/{task-name}/thinks/` | 任何其他路径 | 只能写入思考文件 |
+| **Librarian** | `.plans/{task-name}/thinks/` | 任何其他路径 | 只能写入思考文件 |
+| **Oracle** | `.plans/{task-name}/thinks/` | 任何其他路径 | 只能写入思考文件 |
+| **Multimodal-Looker** | `.plans/{task-name}/thinks/` | 任何其他路径 | 只能写入思考文件 |
+| **Momus** | `.plans/{task-name}/thinks/` | 任何其他路径 | 只能写入思考文件 |
+
+**具体限制：**
+
+1. **super-plan** 只能写入 `.plans/` 目录
+   - ✅ `.plans/{task-name}/v1.0.0-{timestamp}.md`
+   - ✅ `.plans/{task-name}/thinks/*.md`
+   - ❌ `./a.md`
+   - ❌ `/tmp/test.md`
+   - ❌ `README.md`
+   - ❌ 任何 `.plans/` 之外的绝对路径
+
+2. **Sub-Agent 继承限制**
+   - 由 super-plan 唤起的 Sub-Agent（Metis、Explore、Librarian、Oracle、Multimodal-Looker、Momus）同样只能写入 `.plans/{task-name}/thinks/` 目录
+   - Sub-Agent 不能修改源代码文件
+   - Sub-Agent 不能创建配置文件
+   - Sub-Agent 不能执行任何文件系统写入操作，除了在 `.plans/{task-name}/thinks/` 下保存其思考输出
+
+3. **禁止的写入操作：**
+   - 修改项目源代码
+   - 创建或修改配置文件（`.env`、`config.json` 等）
+   - 创建测试文件
+   - 创建文档文件（README、CHANGELOG 等）
+   - 在根目录或项目目录下创建任何文件
+
+4. **违规处理：**
+   - 如果尝试写入禁止路径，将被系统拒绝
+   - 如果 Sub-Agent 尝试写入禁止路径，super-plan 必须捕获错误并拒绝该请求
+   - 所有计划相关操作必须在 `.plans/` 沙箱内完成
+
+**验证规则：**
+在每次文件写入前，验证路径是否符合以下正则：
+```
+允许: ^\.plans/.*\.md$
+禁止: ^(?!\.plans/).*$
+```
 
 ### 当用户似乎想要直接工作时
 
@@ -255,21 +307,21 @@ else:  # complexity_score >= 6
 
 ### 预定义会话策略矩阵
 
-| 复杂度 | Metis | Librarian | Oracle | Multimodal-Looker | Momus |
-|--------|-------|-----------|--------|-------------------|-------|
-| **Simple** (<3) | current | current | current | current | current |
-| **Moderate** (3-6) | current | sub | sub | current | current |
-| **Complex** (≥6) | current | sub | sub | sub | sub |
+| 复杂度 | Metis | Explore | Librarian | Oracle | Multimodal-Looker | Momus |
+|--------|-------|-----------|-----------|--------|-------------------|-------|
+| **Simple** (<3) | current | current | current | current | current | current |
+| **Moderate** (3-6) | current | sub | sub | sub | current | current |
+| **Complex** (≥6) | current | sub | sub | sub | sub | sub |
 
 **会话策略函数实现**：
 ```typescript
 function getSessionStrategy(complexityScore) {
   if (complexityScore < 3) {
-    return { metis: "current", librarian: "current", oracle: "current", "multimodal-looker": "current", momus: "current" }
+    return { metis: "current", explore: "current", librarian: "current", oracle: "current", "multimodal-looker": "current", momus: "current" }
   } else if (complexityScore < 6) {
-    return { metis: "current", librarian: "sub", oracle: "sub", "multimodal-looker": "current", momus: "current" }
+    return { metis: "current", explore: "sub", librarian: "sub", oracle: "sub", "multimodal-looker": "current", momus: "current" }
   } else {
-    return { metis: "current", librarian: "sub", oracle: "sub", "multimodal-looker": "sub", momus: "sub" }
+    return { metis: "current", explore: "sub", librarian: "sub", oracle: "sub", "multimodal-looker": "sub", momus: "sub" }
   }
 }
 
@@ -333,6 +385,7 @@ function shouldUseSubsession(agentType) {
 |------------|-------------|-----------|------|
 | **Metis** | Current | Full | 所有对话历史 |
 | **Momus** | Current | Summary | 压缩摘要 + 计划文件 |
+| **Explore** | Current/Sub | Minimal | 任务描述 + 需探索的代码模式 |
 | **Librarian** | Current/Sub | Summary | 任务描述 + Metis 洞察 |
 | **Oracle** | Current/Sub | Summary | 任务描述 + Metis 洞察 + 相关架构 |
 | **Multimodal-Looker** | Current/Sub | Minimal | 任务状态 + 用户意图 |
@@ -379,6 +432,7 @@ const stepTimings = {
 }
 
 // 2.1 初始化全局 call_id holder（跨步骤共享）
+let exploreCallIdHolder = null
 let librarianCallIdHolder = null
 let oracleCallIdHolder = null
 let multimodalCallIdHolder = null
@@ -390,6 +444,7 @@ const currentSessionId = "current-session"
 // 3. 初始化 Sub-Agent 统计
 const subagentStats = {
   "metis": { calls: 0, totalTime: 0 },
+  "explore": { calls: 0, totalTime: 0 },
   "librarian": { calls: 0, totalTime: 0 },
   "oracle": { calls: 0, totalTime: 0 },
   "multimodal-looker": { calls: 0, totalTime: 0 },
@@ -449,6 +504,7 @@ startStep("step-1")
 | Agent | 超时时间 | 行为 |
 |-------|---------|------|
 | Metis | 2 分钟 | 超时后自动终止，使用默认意图分类 |
+| Explore | 3 分钟 | 超时后终止，标记代码探索为"部分完成" |
 | Librarian | 5 分钟 | 超时后终止，标记研究为"部分完成" |
 | Oracle | 5 分钟 | 超时后终止，标记架构分析为"部分完成" |
 | Multimodal-Looker | 5 分钟 | 超时后终止，标记媒体分析为"失败" |
@@ -529,6 +585,7 @@ const endStep = (id) => {
 // Sub-Agent 简化统计（仅记录总时间和调用次数）
 const subagentStats = {
   "metis": { calls: 0, totalTime: 0 },
+  "explore": { calls: 0, totalTime: 0 },
   "librarian": { calls: 0, totalTime: 0 },
   "oracle": { calls: 0, totalTime: 0 },
   "multimodal-looker": { calls: 0, totalTime: 0 },
@@ -618,15 +675,19 @@ const metisOutput = getLatestAgentOutput(taskName, "metis", metisCallId)
 // 从 Metis 输出中提取推荐
 const metisRecommendations = parseMetisOutput(metisOutput)
 
-// 根据推荐确定是否调用各个 Sub-Agent
+// 根据推荐确定是否调用各个 Sub-Agent（按照 Metis 的结果决定）
+const needsExplore = metisRecommendations.recommended_agents.includes("explore") ||
+                      metisRecommendations.recommended_agents.includes("Explore") ||
+                      metisRecommendations.needs_code_exploration === true
+
 const needsLibrarian = metisRecommendations.recommended_agents.includes("librarian") ||
                        metisRecommendations.recommended_agents.includes("Librarian") ||
                        metisRecommendations.needs_external_research === true
 
 const needsOracle = metisRecommendations.recommended_agents.includes("oracle") ||
-                    metisRecommendations.recommended_agents.includes("Oracle") ||
-                    metisRecommendations.intent_type === "Architecture" ||
-                    metisRecommendations.intent_type.includes("Architecture")
+                     metisRecommendations.recommended_agents.includes("Oracle") ||
+                     metisRecommendations.intent_type === "Architecture" ||
+                     metisRecommendations.intent_type.includes("Architecture")
 
 const needsMultimodal = metisRecommendations.recommended_agents.includes("multimodal-looker") ||
                         metisRecommendations.recommended_agents.includes("Multimodal") ||
@@ -703,6 +764,32 @@ async function callAgentWithTimeout(agentType, taskConfig, timeoutMs, fallback) 
     }
     throw error
   }
+}
+
+if (needsExplore) {
+  const startTime = Date.now()
+  const taskConfig = {
+    subagent_type: "explore",
+    description: `Codebase exploration for: ${task}`,
+    prompt: `Explore the codebase for: ${task}\n\n**任务上下文**：${interviewSummary}\n\n请提供：\n1. 相关文件列表\n2. 代码模式\n3. 架构理解`,
+    task_id: undefined
+  }
+
+  calls.push(callAgentWithTimeout("explore", taskConfig, 180000, {
+    recommended_agents: ["explore"],
+    notes: "Partial code exploration due to timeout"
+  }).then(({ success, result, fallback }) => {
+    if (success) {
+      const exploreCallId = result.task_id || result.session_id || currentSessionId
+      exploreCallIdHolder = exploreCallId
+      write(`.plans/${taskName}/thinks/explore-${exploreCallId}-${Date.now()}.md`, result.output || JSON.stringify(result))
+    } else {
+      exploreCallIdHolder = `${currentSessionId}-timeout-fallback`
+      write(`.plans/${taskName}/thinks/explore-${exploreCallIdHolder}-${Date.now()}.md`,
+            `# Explore Timed Out\n\n**Fallback Output**:\n${JSON.stringify(fallback, null, 2)}`)
+    }
+    return { success, result, fallback }
+  }))
 }
 
 if (needsLibrarian) {
@@ -834,6 +921,7 @@ function getLatestAgentOutput(taskName, agentType, callId) {
 
 // 1. 读取所有思考文件（只对实际调用的 agent 获取输出）
 const metisOutput = getLatestAgentOutput(taskName, "metis", metisCallId)
+const exploreOutput = (needsExplore && exploreCallIdHolder) ? getLatestAgentOutput(taskName, "explore", exploreCallIdHolder) : null
 const librarianOutput = (needsLibrarian && librarianCallIdHolder) ? getLatestAgentOutput(taskName, "librarian", librarianCallIdHolder) : null
 const oracleOutput = (needsOracle && oracleCallIdHolder) ? getLatestAgentOutput(taskName, "oracle", oracleCallIdHolder) : null
 const multimodalOutput = (needsMultimodal && multimodalCallIdHolder) ? getLatestAgentOutput(taskName, "multimodal-looker", multimodalCallIdHolder) : null
@@ -841,6 +929,7 @@ const multimodalOutput = (needsMultimodal && multimodalCallIdHolder) ? getLatest
 // 2. 综合洞察并生成计划
 const plan = synthesizePlan({
   metisOutput,
+  exploreOutput,
   librarianOutput,
   oracleOutput,
   multimodalOutput
@@ -1000,6 +1089,7 @@ plan.metadata = {
   // 记录所有使用的 session_id，用于中断回溯
   sessionIds: {
     metis: metisCallId,
+    explore: needsExplore ? exploreCallIdHolder : null,
     librarian: needsLibrarian ? librarianCallIdHolder : null,
     oracle: needsOracle ? oracleCallIdHolder : null,
     multimodal: needsMultimodal ? multimodalCallIdHolder : null,
@@ -1104,6 +1194,7 @@ Object.entries(subagentStats).forEach(([agent, stats]) => {
 - **Mode**: {current-only | sub-session-only | mixed}
 - **Agent Sessions**:
   - Metis: {current | sub-session}
+  - Explore: {current | sub-session}
   - Librarian: {current | sub-session}
   - Oracle: {current | sub-session}
   - Multimodal-Looker: {current | sub-session}
@@ -1112,6 +1203,7 @@ Object.entries(subagentStats).forEach(([agent, stats]) => {
 
 ### Session IDs (用于中断回溯)
 - **Metis**: `{metis_session_id}`
+- **Explore**: `{explore_session_id}`
 - **Librarian**: `{librarian_session_id}`
 - **Oracle**: `{oracle_session_id}`
 - **Multimodal-Looker**: `{multimodal_session_id}`
@@ -1148,6 +1240,7 @@ Object.entries(subagentStats).forEach(([agent, stats]) => {
 | Sub-Agent | Thought File | 关键洞察 |
 |------------|--------------|--------------|
 | **Metis** | `.plans/{task-name}/thinks/metis-{session_id}-{timestamp}.md` | [意图分类、识别的 gap、guardrails] |
+| **Explore** | `.plans/{task-name}/thinks/explore-{session_id}-{timestamp}.md` | [代码库结构、相关文件、代码模式] |
 | **Librarian** | `.plans/{task-name}/thinks/librarian-{session_id}-{timestamp}.md` | [外部研究发现、文档引用] |
 | **Oracle** | `.plans/{task-name}/thinks/oracle-{session_id}-{timestamp}.md` | [架构决策、权衡分析] |
 | **Multimodal-Looker** | `.plans/{task-name}/thinks/multimodal-looker-{session_id}-{timestamp}.md` | [媒体分析、提取的信息] |
@@ -1372,6 +1465,7 @@ After finalizing the plan, present a summary to the user:
 
 **Sub-Agent Contributions**:
 - Metis: Gap analysis and intent classification
+- Explore: Codebase exploration and code patterns
 - Librarian: External research and best practices
 - Oracle: Architecture decisions and trade-offs
 - Momus: Verification and blocker detection (if requested)
@@ -1385,26 +1479,6 @@ After finalizing the plan, present a summary to the user:
 - OUT: [What's excluded]
 
 **Thought Processes**: All sub-agent analysis stored in .plans/{task-name}/thinks/
-
-To begin execution, run: /start-work
-```
-
-### Final Choice
-
-Present using Question tool:
-
-```typescript
-Question({
-  questions: [{
-    question: "Plan is ready. How would you like to proceed?",
-    header: "Next Step",
-    options: [
-      {
-        label: "Start Work",
-        description: "Execute .plans/{task-name}/v1.0.0-{YYYYmmddHHmm}.md on build"
-      }
-    ]
-  })
 ```
 
 ### Clean Up Draft Files
