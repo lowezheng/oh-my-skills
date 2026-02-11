@@ -292,17 +292,19 @@ mkdir -p "./plans/{task-name}/drafts"
 
 ```typescript
 todoWrite([
-  { id: "orch-1", content: "Create task directory structure", status: "in_progress", priority: "high" },
-  { id: "orch-2", content: "Consult Metis for gap analysis and intent classification", status: "pending", priority: "high" },
-  { id: "orch-3", content: "Dispatch relevant sub-agents (Librarian/Oracle/Multimodal-Looker)", status: "pending", priority: "high" },
-  { id: "orch-4", content: "Synthesize sub-agent outputs into comprehensive plan", status: "pending", priority: "high" },
-  { id: "orch-5", content: "Review plan with Momus for executable verification", status: "pending", priority: "high" },
-  { id: "orch-6", content: "Present plan summary to user", status: "pending", priority: "high" },
-  { id: "orch-7", content: "Finalize and save plan", status: "pending", priority: "medium" }
+  { id: "orch-1", content: "创建 task directory structure", status: "in_progress", priority: "high" },
+  { id: "orch-2", content: "咨询 Metis 进行 gap analysis（自动进行）", status: "pending", priority: "high" },
+  { id: "orch-3", content: "生成工作计划到 plans/thinks/initial-plan.md", status: "pending", priority: "high" },
+  { id: "orch-4", content: "自我审查：分类差距（关键/次要/模糊）", status: "pending", priority: "high" },
+  { id: "orch-5", content: "呈现总结并附带自动解决项和需要的决策", status: "pending", priority: "high" },
+  { id: "orch-6", content: "如果需要决策：等待用户，更新计划", status: "pending", priority: "high" },
+  { id: "orch-7", content: "询问用户关于高精度模式（Momus 审查）", status: "pending", priority: "high" },
+  { id: "orch-8", content: "如果高精度：提交给 Momus 并迭代直到 OKAY", status: "pending", priority: "medium" },
+  { id: "orch-9", content: "Finalize 并保存 plan 到 plans/{task-name}/v{x.x.x}-{yyyyMMddHHmm}.md", status: "pending", priority: "medium" }
 ])
 ```
 
-**注意**：orch-5 (Momus Review) 步骤需要用户确认，不能自动执行。
+**注意**：orch-7 步骤（询问用户关于高精度模式）需要用户选择，orch-8 步骤仅在用户选择高精度模式时执行。
 
 ---
 

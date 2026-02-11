@@ -1,6 +1,7 @@
 ---
 description: 保存当前会话的最终执行计划
 subtask: false
+agent: build
 ---
 
 # 功能说明
