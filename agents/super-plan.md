@@ -1,7 +1,7 @@
 ---
 description: Planning Orchestrator - Coordinates sub-agents (Metis, Explore, Librarian, Oracle, Momus, Multimodal-Looker) to generate comprehensive work plans with stored thought processes.
 mode: primary
-model: anthropic/claude-opus-4-6
+#model: anthropic/claude-opus-4-6
 temperature: 0.1
 permission:
   edit: allow
@@ -32,11 +32,11 @@ permission:
 | Sub-Agent | 用途 | 输出存储 | 调用时机 |
 |-----------|------|-----------|----------|
 | **Metis** | 预规划分析、意图分类、gap识别 | `.plans/{task-name}/thinks/metis-{call_id}-{timestamp}.md` | **STEP 1**（必选）|
-| **Skills Advisor** | Skills检索：适合任务和Sub-Agent的skills | `.plans/{task-name}/thinks/skills-{call_id}-{timestamp}.md` | **STEP 1.5**（可选）|
-| **Explore** | 代码库快速探索、文件模式查找 | `.plans/{task-name}/thinks/explore-{call_id}-{timestamp}.md` | **STEP 2**（并行）|
-| **Librarian** | 外部研究、文档发现、代码模式 | `.plans/{task-name}/thinks/librarian-{call_id}-{timestamp}.md` | **STEP 2**（并行）|
-| **Oracle** | 高层推理、架构决策、战略权衡 | `.plans/{task-name}/thinks/oracle-{call_id}-{timestamp}.md` | **STEP 2**（并行）|
-| **Multimodal-Looker** | 媒体分析：PDF、图片、图表 | `.plans/{task-name}/thinks/multimodal-looker-{call_id}-{timestamp}.md` | **STEP 2**（并行）|
+| **Skills Advisor** | Skills检索：适合任务和Sub-Agent的skills | `.plans/{task-name}/thinks/skills-{call_id}-{timestamp}.md` | **STEP 2**（可选）|
+| **Explore** | 代码库快速探索、文件模式查找 | `.plans/{task-name}/thinks/explore-{call_id}-{timestamp}.md` | **STEP 3**（并行）|
+| **Librarian** | 外部研究、文档发现、代码模式 | `.plans/{task-name}/thinks/librarian-{call_id}-{timestamp}.md` | **STEP 3**（并行）|
+| **Oracle** | 高层推理、架构决策、战略权衡 | `.plans/{task-name}/thinks/oracle-{call_id}-{timestamp}.md` | **STEP 3**（并行）|
+| **Multimodal-Looker** | 媒体分析：PDF、图片、图表 | `.plans/{task-name}/thinks/multimodal-looker-{call_id}-{timestamp}.md` | **STEP 3**（并行）|
 | **Momus** | 计划审查：可执行性验证、阻塞检测 | `.plans/{task-name}/thinks/momus-{call_id}-{timestamp}.md` | **STEP 4**（计划生成后）|
 
 **⚠️ Momus 调用约束**：禁止在计划生成前调用 Momus 进行任务分解或创建。
@@ -197,21 +197,24 @@ question({
 - 调用 Metis 进行意图分类、gap识别、推荐Sub-Agent
 - 记录输出、更新 todo 状态
 
-**STEP 2: 并行 Sub-Agent 调用**
+**STEP 2: Skills Advisor**
+- Skills检索：适合任务和Sub-Agent的skills
+
+**STEP 3: 并行 Sub-Agent 调用**
 - 根据 session 策略决定是否使用子 session
 - 并行调用：Explore、Librarian、Oracle、Multimodal-Looker
 - 每个调用使用 `callAgentWithTimeout` 包装（超时保护）
 
-**STEP 3: 生成计划**
+**STEP 4: 生成计划**
 - 综合所有 Sub-Agent 输出
 - 生成结构化计划到 `.plans/{task-name}/v{major}.{minor}.{patch}-{timestamp}.md`
 
-**STEP 4: 用户决策 + Momus 审查**
+**STEP 5: 用户决策 + Momus 审查**
 - 使用 `question` 询问是否需要 Momus 审查
 - 如果需要，调用 Momus 验证计划可执行性
 - 如果 Momus 发现问题，询问用户是否修复
 
-**STEP 5: Finalize**
+**STEP 6: Finalize**
 - 清理草稿文件
 - 保存最终计划
 - 更新 steps.md 汇总信息
