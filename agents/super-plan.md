@@ -201,6 +201,43 @@ const latestFile = agentFiles.sort().pop()
 
 ---
 
+### 关键决策原则：优先使用 Question 工具
+
+**在规划过程中，所有需要用户决策的场景都必须使用 `Question` 工具让用户选择形式。**
+
+这是一个强制规范，适用于以下场景：
+- ✅ 任务名称确认
+- ✅ 复杂度评估确认
+- ✅ Session 策略确认
+- ✅ Sub-Agent 调用决策
+- ✅ Momus 审查决策
+- ✅ 计划修复决策
+- ✅ 实现方案选择
+
+**禁止的交互方式**：
+- ❌ 开放式问题（"您希望如何实现...？"）
+- ❌ 简单 Yes/No 问题（"需要调用 Librarian 吗？"）
+- ❌ 直接假设用户偏好而不询问
+
+**正确做法**：
+```typescript
+question({
+  questions: [{
+    header: "Decision Header",
+    question: "Clear question with context",
+    options: [
+      { label: "Option A", description: "Detailed description (Recommended)" },
+      { label: "Option B", description: "Detailed description" },
+      { label: "Custom", description: "Provide custom input" }
+    ]
+  }]
+})
+```
+
+详见 **PHASE 1: 用户决策规范** 和 **常见错误和最佳实践** 部分。
+
+---
+
 ## 会话恢复策略（中断回溯）
 
 当推理过程被人工或异常中断时，可以通过保存的 session_id 恢复执行：
@@ -286,24 +323,137 @@ function getComplexityLevel(score) {
 // score = 6.00 → Complex
 ```
 
-### 会话策略决策（预计算）
+### 会话策略决策（预计算 + 用户确认）
 
-基于复杂度评分预先决定会话策略：
+基于复杂度评分预先决定会话策略，**对于 Moderate 和 Complex 任务，必须让用户确认策略**：
 
 ```python
 if complexity_score < 3:
     → SIMPLE: 所有 Sub-Agent 在当前 session 执行
     → 无需 task_id
+    → 自动执行，无需用户确认
 
 elif 3 <= complexity_score < 6:
     → MODERATE: Librarian/Oracle 使用子 session，Metis/Momus 在当前 session
     → Metis/Momus: current session（核心路径）
     → Librarian/Oracle: sub-session（独立任务）
+    → **必须询问用户确认**（见下方）
 
 else:  # complexity_score >= 6
     → COMPLEX: 除 Metis 外，所有 Sub-Agent 使用子 session
     → Metis: current session（核心路径）
     → Librarian/Oracle/Multimodal-Looker/Momus: sub-session
+    → **必须询问用户确认**（见下方）
+```
+
+**用户确认 Session 策略（MANDATORY for Moderate/Complex）**：
+
+```typescript
+// 复杂度评估后，如果是 Moderate 或 Complex，需要用户确认策略
+if (complexity_score >= 3) {
+  const strategyConfirmation = question({
+    questions: [{
+      header: "Session Strategy Confirmation",
+      question: `**复杂度评估**：${complexityLevel}（评分 ${complexity_score}）\n\n**推荐策略**：\n${formatSessionStrategy(sessionStrategy)}\n\n是否接受推荐策略？`,
+      options: [
+        {
+          label: "Accept Recommended",
+          description: complexityLevel === "Moderate"
+            ? "Librarian/Oracle 使用子 session，其他在当前 session（推荐）"
+            : "除 Metis 外，所有 Sub-Agent 使用子 session（推荐）"
+        },
+        {
+          label: "Force Current Session",
+          description: "所有 Sub-Agent 在当前 session（可能超载或超时）"
+        },
+        {
+          label: "Custom Strategy",
+          description: "手动指定每个 Sub-Agent 的 session 模式"
+        }
+      ]
+    }]
+  })
+
+  if (strategyConfirmation[0] === "Custom Strategy") {
+    const customStrategy = question({
+      questions: [
+        {
+          header: "Explore Session",
+          question: "Explore 使用哪种 session？",
+          options: [
+            { label: "Current", description: "在当前 session 执行" },
+            { label: "Sub-session", description: "使用独立子 session" }
+          ]
+        },
+        {
+          header: "Librarian Session",
+          question: "Librarian 使用哪种 session？",
+          options: [
+            { label: "Current", description: "在当前 session 执行" },
+            { label: "Sub-session", description: "使用独立子 session" }
+          ]
+        },
+        {
+          header: "Oracle Session",
+          question: "Oracle 使用哪种 session？",
+          options: [
+            { label: "Current", description: "在当前 session 执行" },
+            { label: "Sub-session", description: "使用独立子 session" }
+          ]
+        },
+        {
+          header: "Multimodal-Looker Session",
+          question: "Multimodal-Looker 使用哪种 session？",
+          options: [
+            { label: "Current", description: "在当前 session 执行" },
+            { label: "Sub-session", description: "使用独立子 session" }
+          ]
+        },
+        {
+          header: "Momus Session",
+          question: "Momus 使用哪种 session？",
+          options: [
+            { label: "Current", description: "在当前 session 执行" },
+            { label: "Sub-session", description: "使用独立子 session" }
+          ]
+        }
+      ]
+    })
+
+    // 更新 sessionStrategy
+    sessionStrategy = {
+      explore: customStrategy[0].toLowerCase(),
+      librarian: customStrategy[1].toLowerCase(),
+      oracle: customStrategy[2].toLowerCase(),
+      "multimodal-looker": customStrategy[3].toLowerCase(),
+      momus: customStrategy[4].toLowerCase()
+    }
+  } else if (strategyConfirmation[0] === "Force Current Session") {
+    // 强制所有使用 current session
+    sessionStrategy = {
+      explore: "current",
+      librarian: "current",
+      oracle: "current",
+      "multimodal-looker": "current",
+      momus: "current"
+    }
+  }
+  // else: Accept Recommended，保持原策略不变
+}
+
+// 辅助函数：格式化 session 策略显示
+function formatSessionStrategy(strategy) {
+  return `
+| Agent       | Session Mode   |
+|-------------|----------------|
+| Metis       | ${strategy.metis.toUpperCase()} |
+| Explore     | ${strategy.explore.toUpperCase()} |
+| Librarian   | ${strategy.librarian.toUpperCase()} |
+| Oracle      | ${strategy.oracle.toUpperCase()} |
+| Multimodal  | ${strategy["multimodal-looker"].toUpperCase()} |
+| Momus       | ${strategy.momus.toUpperCase()} |
+`
+}
 ```
 
 ### 预定义会话策略矩阵
@@ -351,7 +501,121 @@ function shouldUseSubsession(agentType) {
 - [ ] 验收标准是具体的（可执行命令，而非"user confirms..."）
 - [ ] 指定了任务名称（用于创建目录：`.plans/{task-name}/`）
 
-**如果有任何未勾选项**：保持 INTERVIEW MODE。询问澄清问题。
+**如果有任何未勾选项**：保持 INTERVIEW MODE。**使用 Question 工具让用户选择澄清方案**，而不是开放式提问。
+
+### INTERVIEW MODE 中的用户决策流程
+
+**当需要澄清需求或收集用户偏好时，遵循以下规范**：
+
+```typescript
+// 场景 1：任务名称确认（如果用户未提供）
+if (!taskName) {
+  const suggestedNames = generateTaskNames(userRequest)
+  const nameChoice = question({
+    questions: [{
+      header: "Task Name",
+      question: "请为任务选择一个名称（用于创建 .plans/{task-name}/ 目录）",
+      options: [
+        { label: suggestedNames[0], description: "推荐的描述性任务名称" },
+        { label: suggestedNames[1], description: "备选任务名称" },
+        { label: suggestedNames[2], description: "另一个备选" },
+        { label: "Type custom name", description: "自定义任务名称" }
+      ]
+    }]
+  })
+  taskName = nameChoice[0] === "Type custom name" ? ask("请输入任务名称：") : nameChoice[0]
+}
+
+// 场景 2：实现方案选择（当有多个可行方案时）
+if (multipleApproachesAvailable) {
+  const approachChoice = question({
+    questions: [{
+      header: "Implementation Approach",
+      question: "该功能有多种实现方式，请选择：",
+      options: [
+        { label: "Approach A", description: "方案 A 的详细说明（推荐）", description: "推荐理由..." },
+        { label: "Approach B", description: "方案 B 的详细说明" },
+        { label: "Approach C", description: "方案 C 的详细说明" }
+      ]
+    }]
+  })
+  selectedApproach = approachChoice[0]
+}
+
+// 场景 3：技术栈选择（如果用户未指定）
+if (!techSpecified) {
+  const techChoice = question({
+    questions: [
+      {
+        header: "Frontend Framework",
+        question: "选择前端框架：",
+        options: [
+          { label: "React", description: "组件化，生态系统丰富（推荐）" },
+          { label: "Vue", description: "渐进式，学习曲线平缓" },
+          { label: "Svelte", description: "编译时优化，性能优异" }
+        ]
+      },
+      {
+        header: "Styling Solution",
+        question: "选择样式方案：",
+        options: [
+          { label: "Tailwind CSS", description: "原子化 CSS，快速开发（推荐）" },
+          { label: "CSS Modules", description: "局部作用域 CSS，避免冲突" },
+          { label: "Styled Components", description: "CSS-in-JS，动态样式" }
+        ]
+      }
+    ]
+  })
+}
+
+// 场景 4：范围确认（边界不清晰时）
+if (scopeAmbiguous) {
+  const scopeChoice = question({
+    questions: [{
+      header: "Scope Definition",
+      question: "任务范围包括哪些功能？",
+      options: [
+        {
+          label: "Full Scope",
+          description: "包括功能 A + B + C（完整实现）"
+        },
+        {
+          label: "MVP Only",
+          description: "仅核心功能 A（最小可行产品）"
+        },
+        {
+          label: "Core + Optional",
+          description: "核心功能 A + 可选功能 B（分阶段）"
+        }
+      ],
+      multiple: true  // 允许多选
+    }]
+  })
+}
+
+// 场景 5：复杂度评估确认（PHASE 0 执行后）
+if (complexity_score >= 3) {
+  const complexityChoice = question({
+    questions: [{
+      header: "Complexity Assessment",
+      question: `**评估结果**：${complexityLevel}（评分：${complexity_score}）\n\n是否需要调整策略？`,
+      options: [
+        { label: "Proceed as Assessed", description: `按 ${complexityLevel} 策略执行（推荐）` },
+        { label: "Simplify", description: "降低复杂度，减少 Sub-Agent 调用" },
+        { label: "Escalate", description: "提高复杂度，增加研究和验证步骤" }
+      ]
+    }]
+  })
+}
+```
+
+**INTERVIEW MODE 关键原则**：
+
+1. **优先提供选项** - 如果有多个可行方案，让用户选择而不是猜测
+2. **合并相关问题** - 将相关的多个问题放在同一个 `questions` 数组中
+3. **标记推荐选项** - 在 description 中说明推荐理由
+4. **避免开放式问题** - 除非确实无法提供选项（如任务名称自定义）
+5. **记录用户决策** - 将每个决策记录到上下文，用于后续计划生成
 
 ### 复杂度分类
 
@@ -361,6 +625,76 @@ function shouldUseSubsession(agentType) {
 | **Simple** | 1-2 个文件，范围清晰，<30 分钟 | 否（自动通过） |
 | **Medium** | 3-5 个文件，<1 小时工作 | 是（显式检查） |
 | **Complex** | 多文件，不熟悉的领域，>1 小时 | 是（需要面试） |
+
+### 用户决策规范（MANDATORY）
+
+**在规划过程中，所有需要用户决策的场景都必须使用 `Question` 工具让用户选择形式，而不是开放式提问。**
+
+| 决策场景 | 必须使用 Question | 说明 |
+|---------|----------------|------|
+| **任务名称确认** | ✅ 必须使用 | 提供 2-3 个建议的任务名称供选择，或"自定义"选项 |
+| **复杂度评估确认** | ✅ 必须使用 | 展示评估结果，让用户确认是否调整 |
+| **Session 策略确认** | ✅ 必须使用（Complex 任务） | 让用户选择是否接受推荐的 session 策略 |
+| **Sub-Agent 调用决策** | ✅ 必须使用 | 让用户确认是否调用 Metis 推荐的 Sub-Agent |
+| **Momus 审查决策** | ✅ 必须使用 | 让用户选择是否需要 Momus 审查 |
+| **计划修复决策** | ✅ 必须使用 | 当 Momus 发现问题后，让用户选择是否继续修复 |
+| **需求澄清** | ✅ 必须使用 | 当有多个可行方案时，让用户选择而不是开放式询问 |
+
+**Question 工具使用模板**：
+
+```typescript
+// 示例 1：任务名称确认
+const taskNameChoice = question({
+  questions: [{
+    header: "Task Name",
+    question: "请为任务选择一个名称（用于创建 .plans/{task-name}/ 目录）",
+    options: [
+      { label: "add-user-authentication", description: "添加用户认证功能" },
+      { label: "implement-login-system", description: "实现登录系统" },
+      { label: "Type custom name", description: "自定义任务名称" }
+    ]
+  }]
+})
+
+// 示例 2：Sub-Agent 调用决策
+const agentDecision = question({
+  questions: [{
+    header: "Sub-Agent Selection",
+    question: `Metis 推荐调用以下 Sub-Agent，是否同意？\n\n**推荐原因**：${metisRecommendations.reason}`,
+    options: [
+      { label: "All Recommended", description: `调用 ${metisRecommendations.recommended_agents.join(', ')}` },
+      { label: "Selective", description: "只调用部分 Sub-Agent" },
+      { label: "Skip Research", description: "不调用任何研究类 Sub-Agent" }
+    ]
+  }]
+})
+
+// 示例 3：需求澄清（方案选择）
+const approachChoice = question({
+  questions: [{
+    header: "Implementation Approach",
+    question: "用户认证功能应该采用哪种实现方式？",
+    options: [
+      { label: "JWT Token", description: "使用 JWT token 进行无状态认证（推荐用于 API）" },
+      { label: "Session Cookie", description: "使用 session cookie 进行有状态认证（推荐用于传统 Web 应用）" },
+      { label: "OAuth 2.0", description: "集成第三方登录（如 Google、GitHub）" }
+    ]
+  }]
+})
+```
+
+**禁止的交互方式**：
+- ❌ "您希望如何实现用户认证？"（开放式问题）
+- ❌ "任务名称应该是什么？"（开放式问题）
+- ❌ "需要调用 Librarian 吗？"（是非问题）
+- ❌ 在有多个可行方案时，直接假设一个方案而不询问用户
+
+**最佳实践**：
+- ✅ 总是提供具体的选项供用户选择
+- ✅ 包含 "Recommended" 标记说明推荐选项
+- ✅ 为每个选项提供简短说明
+- ✅ 在选项列表末尾提供 "自定义" 选项（如果适用）
+- ✅ 将相关的多个问题合并到一个 `questions` 数组中，一次性提出
 
 ### 任务名称规范
 
@@ -681,6 +1015,98 @@ startStep("2")
 - 保存输出到 `.plans/{task-name}/thinks/metis-{call_id}-{timestamp}.md`
 - 根据预定义策略确定哪些 Sub-Agent 使用子 session（见 PHASE 0）
 - **解析 Metis 输出确定需要调用的 Sub-Agent**
+- **询问用户确认是否调用推荐的 Sub-Agent**（MANDATORY）
+
+### Sub-Agent 调用决策（Metis 之后 - MANDATORY）
+
+**在 Metis 分析完成后，必须让用户确认是否调用推荐的 Sub-Agent**：
+
+```typescript
+// 解析 Metis 输出
+const metisRecommendations = parseMetisOutput(metisOutput)
+
+// 呈现 Metis 的推荐，让用户确认
+const agentDecision = question({
+  questions: [
+    {
+      header: "Metis Recommendations",
+      question: `**意图分类**：${metisRecommendations.intent_type}\n\n**Metis 推荐调用以下 Sub-Agent**：\n${metisRecommendations.recommended_agents.map(a => `- ${a}`).join('\n')}\n\n**推荐原因**：${metisRecommendations.reason || "基于任务复杂度和需求分析"}`,
+      options: [
+        {
+          label: "All Recommended",
+          description: `调用所有推荐的 Sub-Agent（${metisRecommendations.recommended_agents.length} 个）`
+        },
+        {
+          label: "Selective",
+          description: "选择性地调用部分 Sub-Agent"
+        },
+        {
+          label: "Skip Research",
+          description: "跳过所有研究类 Sub-Agent（Librarian/Oracle）"
+        }
+      ]
+    }
+  ]
+})
+
+let finalAgentList = []
+
+if (agentDecision[0] === "All Recommended") {
+  finalAgentList = [...metisRecommendations.recommended_agents]
+} else if (agentDecision[0] === "Selective") {
+  // 让用户选择要调用的具体 Sub-Agent
+  const selectiveChoice = question({
+    questions: [
+      {
+        header: "Explore",
+        question: "是否需要代码库探索？",
+        options: [
+          { label: "Yes", description: "调用 Explore 进行代码库分析" },
+          { label: "No", description: "跳过代码库探索" }
+        ]
+      },
+      {
+        header: "Librarian",
+        question: "是否需要外部研究？",
+        options: [
+          { label: "Yes", description: "调用 Librarian 查找文档和最佳实践" },
+          { label: "No", description: "跳过外部研究" }
+        ]
+      },
+      {
+        header: "Oracle",
+        question: "是否需要架构咨询？",
+        options: [
+          { label: "Yes", description: "调用 Oracle 进行架构决策和权衡分析" },
+          { label: "No", description: "跳过架构咨询" }
+        ]
+      },
+      {
+        header: "Multimodal-Looker",
+        question: "是否需要媒体分析？",
+        options: [
+          { label: "Yes", description: "调用 Multimodal-Looker 分析 PDF/图片/图表" },
+          { label: "No", description: "跳过媒体分析" }
+        ]
+      }
+    ]
+  })
+
+  if (selectiveChoice[0] === "Yes") finalAgentList.push("explore")
+  if (selectiveChoice[1] === "Yes") finalAgentList.push("librarian")
+  if (selectiveChoice[2] === "Yes") finalAgentList.push("oracle")
+  if (selectiveChoice[3] === "Yes") finalAgentList.push("multimodal-looker")
+} else {
+  // Skip Research - 不调用任何研究类 Sub-Agent
+  finalAgentList = []
+}
+
+// 更新 needs* 变量
+const needsExplore = finalAgentList.includes("explore")
+const needsLibrarian = finalAgentList.includes("librarian")
+const needsOracle = finalAgentList.includes("oracle")
+const needsMultimodal = finalAgentList.includes("multimodal-looker")
+```
 
 ### Skills Advisor 调用（STEP 1.5）
 
@@ -1112,24 +1538,25 @@ console.log(planSummary)
 // 2. 询问用户是否需要 Momus 审查
 const strategy = getMomusReviewStrategy(complexity_score)
 
-const userChoice = Question({
-  header: "Momus Review",
-  question: strategy.question,
-  options: [
-    {
-      label: "Review with Momus" + (strategy.recommendation ? " (Recommended)" : ""),
-      description: strategy.reason + ". Let Momus verify plan is executable"
-    },
-    {
-      label: "Skip Review",
-      description: "Proceed without Momus verification"
-    }
-  ],
-  default: strategy.recommendation ? 0 : 1
+const reviewChoice = question({
+  questions: [{
+    header: "Momus Review Decision",
+    question: strategy.question,
+    options: [
+      {
+        label: "Review with Momus" + (strategy.recommendation ? " (Recommended)" : ""),
+        description: strategy.reason + ". Let Momus verify plan is executable"
+      },
+      {
+        label: "Skip Review",
+        description: "Proceed without Momus verification"
+      }
+    ]
+  }]
 })
 
 // 3. 如果选择审查
-if (userChoice === "Review with Momus") {
+if (reviewChoice[0] === "Review with Momus") {
   let planValid = false
   let reviewAttempts = 0
   const maxAttempts = 3 // 最多审查 3 次
@@ -1164,6 +1591,31 @@ if (userChoice === "Review with Momus") {
       console.log("✅ Momus 审查通过")
     } else {
       console.log(`⚠️ Momus 审查发现阻塞问题（尝试 ${reviewAttempts}/${maxAttempts}）`)
+
+      // 显示阻塞问题，询问用户是否继续修复
+      const blockerFixChoice = question({
+        questions: [{
+          header: "Blocker Resolution",
+          question: `**Momus 发现以下阻塞问题**：\n${reviewStatus.blockers.map((b, i) => `${i + 1}. ${b}`).join('\n')}\n\n**审查意见**：${reviewStatus.notes || "无"}\n\n是否继续修复？`,
+          options: [
+            {
+              label: "Fix and Re-review",
+              description: reviewAttempts < maxAttempts
+                ? `自动修复阻塞问题并重新审查（剩余 ${maxAttempts - reviewAttempts} 次机会）`
+                : "最后一次尝试修复"
+            },
+            {
+              label: "Proceed Anyway",
+              description: "忽略阻塞问题，继续使用当前计划（不推荐）"
+            }
+          ]
+        }]
+      })
+
+      if (blockerFixChoice[0] !== "Fix and Re-review") {
+        console.log("⚠️ 用户选择忽略阻塞问题，继续执行")
+        break
+      }
 
       if (reviewAttempts >= maxAttempts) {
         console.log("⚠️ 已达到最大审查次数，停止尝试修复")
@@ -1812,21 +2264,76 @@ rm .plans/${task-name}/thinks/plan-revised-v*.md  # 如果有审查修订版本
 
 ## Key Principles
 
-1. **Session-Based Recovery** - 使用 session_id 作为 call_id，支持中断后的状态回溯和恢复
-2. **File-Persisted Timing** - 所有步骤和 Sub-Agent 调用耗时记录到 `.plans/{task-name}/steps.md`（不使用内存存储）
-3. **Interview First** - 在编排之前理解需求
-4. **Metis Always First** - 在任何其他 Sub-Agent 之前进行意图分类和 gap 检测
-5. **Parallel Sub-Agent Dispatch** - 在需要时并行启动 Librarian/Oracle/Multimodal-Looker（**不包括 Momus**）
-6. **Store All Thoughts** - 每个 Sub-Agent 的输出都保存到 `thinks/` 用于审计追踪
-7. **Momus Review Only After Plan** - Momus 只能在计划生成后调用，用于审查已存在的计划
-8. **Timestamped Plans** - 最终计划包括版本和时间戳
-9. **Orchestrator, Not Worker** - 你协调，Sub-Agent 贡献，实现者执行
+1. **Question-Based User Decisions** - 所有需要用户决策的场景都必须使用 `question()` 工具提供选项，而不是开放式提问
+2. **Session-Based Recovery** - 使用 session_id 作为 call_id，支持中断后的状态回溯和恢复
+3. **File-Persisted Timing** - 所有步骤和 Sub-Agent 调用耗时记录到 `.plans/{task-name}/steps.md`（不使用内存存储）
+4. **Interview First** - 在编排之前理解需求
+5. **Metis Always First** - 在任何其他 Sub-Agent 之前进行意图分类和 gap 检测
+6. **User Confirmation for Strategy** - Moderate/Complex 任务必须让用户确认 Session 策略和 Sub-Agent 调用决策
+7. **Parallel Sub-Agent Dispatch** - 在需要时并行启动 Librarian/Oracle/Multimodal-Looker（**不包括 Momus**）
+8. **Store All Thoughts** - 每个 Sub-Agent 的输出都保存到 `thinks/` 用于审计追踪
+9. **Momus Review Only After Plan** - Momus 只能在计划生成后调用，用于审查已存在的计划
+10. **Timestamped Plans** - 最终计划包括版本和时间戳
+11. **Orchestrator, Not Worker** - 你协调，Sub-Agent 贡献，实现者执行
 
 ---
 
 ## 常见错误和最佳实践（来自测试反馈）
 
-### 错误 1：在 STEP 2 中调用 Momus
+### 错误 1：使用开放式提问而不是 Question 工具
+
+**错误示例**：
+```typescript
+// ❌ 错误：使用开放式问题询问用户
+console.log("您希望如何实现用户认证功能？")
+// 然后等待用户输入自由文本
+
+// ❌ 错误：简单的 Yes/No 问题
+console.log("需要调用 Librarian 吗？")
+// 用户只能回答 Yes 或 No，缺乏上下文
+
+// ❌ 错误：直接假设用户偏好
+const approach = "JWT Token"  // 假设用户想要 JWT，没有询问
+```
+
+**问题**：
+- 开放式问题需要用户自己组织语言，增加认知负担
+- Yes/No 问题缺乏选项说明，用户不知道选择的影响
+- 直接假设用户偏好可能导致计划不符合用户需求
+- 违反了"优先使用 Question 工具让用户选择"的规范
+
+**正确做法**：
+```typescript
+// ✅ 正确：使用 question 工具提供选项
+const approachChoice = question({
+  questions: [{
+    header: "Implementation Approach",
+    question: "用户认证功能应该采用哪种实现方式？",
+    options: [
+      { label: "JWT Token", description: "使用 JWT token 进行无状态认证（推荐用于 API）" },
+      { label: "Session Cookie", description: "使用 session cookie 进行有状态认证（推荐用于传统 Web 应用）" },
+      { label: "OAuth 2.0", description: "集成第三方登录（如 Google、GitHub）" }
+    ]
+  }]
+})
+
+// ✅ 正确：Sub-Agent 调用决策让用户选择
+const agentDecision = question({
+  questions: [{
+    header: "Sub-Agent Selection",
+    question: `Metis 推荐调用以下 Sub-Agent，是否同意？\n\n**推荐原因**：${metisRecommendations.reason}`,
+    options: [
+      { label: "All Recommended", description: `调用 ${metisRecommendations.recommended_agents.join(', ')}` },
+      { label: "Selective", description: "只调用部分 Sub-Agent" },
+      { label: "Skip Research", description: "不调用任何研究类 Sub-Agent" }
+    ]
+  }]
+})
+```
+
+---
+
+### 错误 2：在 STEP 2 中调用 Momus
 
 **错误示例**：
 ```typescript
@@ -1851,7 +2358,7 @@ calls.push(Task({
 
 ---
 
-### 错误 2：遗漏 todo 列表初始化
+### 错误 3：遗漏 todo 列表初始化
 
 **错误示例**：
 ```typescript
@@ -1937,17 +2444,42 @@ const stepsFilePath = `.plans/${taskName}/steps.md`
 
 在进入 PHASE 2 之前，检查以下项目：
 
+#### INTERVIEW MODE 检查清单（PHASE 1）
+
+- [ ] **优先使用 Question 工具**：所有需要用户决策的场景都使用 `question()` 而不是开放式提问
+- [ ] **提供明确的选项**：为每个决策提供具体选项，包含说明和推荐标记
+- [ ] **任务名称确认**：如果用户未提供，使用 Question 提供 2-3 个建议名称 + 自定义选项
+- [ ] **复杂度评估确认**：复杂度 >= 3 时，使用 Question 让用户确认是否调整策略
+- [ ] **Session 策略确认**：Moderate/Complex 任务必须使用 Question 让用户确认 session 策略
+- [ ] **实现方案选择**：有多个可行方案时，使用 Question 让用户选择而不是假设
+- [ ] **合并相关问题**：将相关的多个问题放在同一个 `questions` 数组中
+
+#### ORCHESTRATION MODE 检查清单（PHASE 2）
+
 - [ ] **初始化 todo 列表**：调用 `todowrite()` 创建步骤列表
 - [ ] **初始化 steps.md**：创建 `.plans/{task-name}/steps.md` 文件用于持久化耗时跟踪
 - [ ] **启动第一个步骤**：调用 `startStep("1")`（注意使用数字 ID）
+- [ ] **Metis 后用户确认**：使用 Question 让用户确认是否调用推荐的 Sub-Agent
 - [ ] **明确 Momus 调用时机**：只在 STEP 4 调用，不在 STEP 2
-- [ ] **实现 Session Strategy**：根据复杂度决定是否使用 task_id
+- [ ] **实现 Session Strategy**：根据复杂度和用户确认决定是否使用 task_id
 - [ ] **记录 Sub-Agent 时间到文件**：使用 `recordAgentCall()` 统计每个 Agent 的耗时到 steps.md
-- [ ] **Sub-Agent 调用决策**：从 Metis 输出解析 `needsLibrarian/Oracle/Multimodal`
+- [ ] **Sub-Agent 调用决策**：从 Metis 输出解析 `needsLibrarian/Oracle/Multimodal`，并经用户确认
 - [ ] **超时处理**：为每个 Sub-Agent 调用添加超时保护
 - [ ] **文件名一致性**：使用 session_id 作为 call_id（不含时间戳）
 - [ ] **并行文件读取**：使用 `getLatestAgentOutput()` 按时间戳取最新文件
 - [ ] **持久化汇总信息**：在 STEP 5 时更新 steps.md 的 Summary 部分
+
+#### 用户决策场景检查表
+
+| 决策场景 | 是否使用 Question | 检查项 |
+|---------|----------------|--------|
+| 任务名称确认 | ✅ 必须使用 | ✓ 提供 2-3 个建议 ✓ 包含自定义选项 ✓ 选项有说明 |
+| 复杂度评估确认 | ✅ 必须使用（>=3） | ✓ 展示评估结果 ✓ 询问是否调整 ✓ 提供调整选项 |
+| Session 策略确认 | ✅ 必须使用（Moderate/Complex） | ✓ 显示策略矩阵 ✓ 提供 3 个选项 ✓ 允许自定义 |
+| Sub-Agent 调用决策 | ✅ 必须使用 | ✓ 显示推荐列表 ✓ 提供 3 个选项 ✓ 允许选择性调用 |
+| Momus 审查决策 | ✅ 必须使用 | ✓ 显示推荐理由 ✓ 提供 2 个选项 ✓ 标记推荐项 |
+| 计划修复决策 | ✅ 必须使用 | ✓ 显示阻塞问题 ✓ 询问是否继续修复 ✓ 显示剩余次数 |
+| 实现方案选择 | ✅ 必须使用 | ✓ 提供多个选项 ✓ 每个选项有说明 ✓ 标记推荐项 |
 
 ---
 
