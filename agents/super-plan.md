@@ -445,8 +445,8 @@ function getCurrentTime() {
   return new Date().toISOString()
 }
 
-function getLocalTime() {
-  const now = new Date()
+function getLocalTime(isoTime) {
+  const now = isoTime ? new Date(isoTime) : new Date()
   return now.toLocaleTimeString('zh-CN', { hour12: false })
 }
 
@@ -465,6 +465,31 @@ function calculateDurationMs(startTime, endTime) {
   const start = new Date(startTime).getTime()
   const end = new Date(endTime).getTime()
   return Math.max(0, end - start)  // 防止负值
+}
+
+// 计算持续时间（返回秒数）
+function calculateDurationSeconds(startTime, endTime) {
+  const start = new Date(startTime).getTime()
+  const end = new Date(endTime).getTime()
+  return Math.max(0, Math.round((end - start) / 1000))  // 防止负值，返回秒数
+}
+
+// 验证时间计算的准确性
+function validateTimeCalculation(startTime, endTime, actualDurationMs) {
+  const calculatedMs = calculateDurationMs(startTime, endTime)
+  const difference = Math.abs(calculatedMs - actualDurationMs)
+  const tolerance = 1000  // 1秒容差
+
+  if (difference > tolerance) {
+    console.warn(`⚠️ 时间计算异常:`)
+    console.warn(`  计算耗时: ${Math.round(calculatedMs / 1000)}s`)
+    console.warn(`  实际耗时: ${Math.round(actualDurationMs / 1000)}s`)
+    console.warn(`  差异: ${Math.round(difference / 1000)}s`)
+    console.warn(`  开始: ${startTime}`)
+    console.warn(`  结束: ${endTime}`)
+  }
+
+  return { calculatedMs, actualDurationMs, difference, valid: difference <= tolerance }
 }
 
 // 记录用户交互时间（Question 工具等待时间）
@@ -523,15 +548,17 @@ async function initStepsFile(taskName, complexity, sessionStrategy, selectedAgen
 
 async function appendStep(taskName, stepNumber, subAgentName, sessionType, startTime, endTime, status, filePath = null, todoId = null) {
   const stepsPath = `.plans/${taskName}/steps.md`
+  const durationMs = calculateDurationMs(startTime, endTime)
   const duration = calculateDuration(startTime, endTime)
   const statusIcon = status === 'completed' ? '✅ 完成' : '❌ 失败'
 
   // 尝试获取文件的实际修改时间
   let fileTime = '-'
+  let fileTimeValid = true
   if (filePath) {
     try {
       const statResult = await bash({
-        command: `stat -f "%SB" -t "%H:%M:%S" "${filePath}" 2>/dev/null || echo "-"`,
+        command: `stat -f "%Sm" -t "%H:%M:%S" "${filePath}" 2>/dev/null || echo "-"`,
         description: `获取文件修改时间: ${filePath}`
       })
       if (statResult.stdout && statResult.stdout.trim() !== '-') {
@@ -539,10 +566,33 @@ async function appendStep(taskName, stepNumber, subAgentName, sessionType, start
       }
     } catch (e) {
       fileTime = '-'
+      fileTimeValid = false
     }
   }
 
-  const newLine = `| ${stepNumber} | ${subAgentName} | ${sessionType} | ${getLocalTime(startTime)} | ${getLocalTime(endTime)} | ~${duration} | ${fileTime} | ${statusIcon} |`
+  // 验证时间计算（如果提供了文件路径）
+  let timeValidationNote = ''
+  if (filePath && fileTimeValid && fileTime !== '-') {
+    // 验证时间是否合理（文件修改时间应该在开始和结束时间之间）
+    const fileTimeDate = new Date()
+    const [hours, minutes, seconds] = fileTime.split(':').map(Number)
+    fileTimeDate.setHours(hours, minutes, seconds, 0)
+
+    const startDate = new Date(startTime)
+    const endDate = new Date(endTime)
+
+    // 检查文件时间是否在合理范围内（±2分钟容差）
+    const fileTimeMs = fileTimeDate.getTime()
+    const startMs = startDate.getTime()
+    const endMs = endDate.getTime()
+    const tolerance = 120000  // 2分钟容差
+
+    if (fileTimeMs < startMs - tolerance || fileTimeMs > endMs + tolerance) {
+      timeValidationNote = ' [⚠️ 时间异常]'
+    }
+  }
+
+  const newLine = `| ${stepNumber} | ${subAgentName} | ${sessionType} | ${getLocalTime(startTime)} | ${getLocalTime(endTime)} | ${duration}${timeValidationNote} | ${fileTime} | ${statusIcon} |`
 
   const existingContent = await read({ filePath: stepsPath })
   const updatedContent = existingContent.content.replace(
@@ -551,6 +601,20 @@ async function appendStep(taskName, stepNumber, subAgentName, sessionType, start
   )
 
   await write({ content: updatedContent, filePath: stepsPath })
+
+  // 记录原始时间戳（用于调试）
+  const debugInfo = `
+<!-- Time Debug: ${subAgentName} -->
+<!-- Start: ${startTime} (${Math.round(new Date(startTime).getTime())}) -->
+<!-- End: ${endTime} (${Math.round(new Date(endTime).getTime())}) -->
+<!-- Duration: ${durationMs}ms (${Math.round(durationMs / 1000)}s) -->
+<!-- File Time: ${fileTime} -->
+`
+
+  // 在 steps.md 末尾添加调试信息（仅用于问题排查）
+  const stepsWithDebug = updatedContent + debugInfo
+
+  await write({ content: stepsWithDebug, filePath: stepsPath })
 
   // 如果提供了 todoId，自动更新对应的 todo 状态
   if (todoId) {
@@ -838,160 +902,232 @@ async function orchestrateWorkPlan(taskName, userRequest, complexity, sessionStr
     await appendStep(taskName, 1.5, 'Sub-Agent 选择', 'Current', getCurrentTime(), getCurrentTime(), `completed (模式: ${subAgentSelection.mode})`)
   }
   
-  // ============ STEP 2: 调用 Sub-Agents ============
-  let parallelResults = []
+  // ============ STEP 2: 串行调用 Sub-Agents（基于依赖关系） ============
+  let agentResults = []
   const parallelStart = getCurrentTime()
   timings.parallelStart = parallelStart
 
   if (subAgentsToCall.length > 0) {
-    // 创建初始 todos（状态：pending）- 按需更新
-    const agentTodos = subAgentsToCall.map((agentType, index) => ({
-      id: String(2 + index),
-      content: `${getAgentDescription(agentType)}`,
-      status: 'pending',
-      priority: getAgentPriority(agentType)
-    }))
-    agentTodos.push({ id: '6', content: '生成工作计划', status: 'pending', priority: 'high' })
+    // 初始化 todos
+    const agentTodos = [
+      { id: '2', content: 'Explore: 代码库探索', status: 'pending', priority: 'high' },
+      { id: '3', content: 'Librarian: 外部研究（条件触发）', status: 'pending', priority: 'medium' },
+      { id: '4', content: 'Oracle: 架构决策（中高复杂度）', status: 'pending', priority: 'medium' },
+      { id: '6', content: '生成工作计划', status: 'pending', priority: 'high' }
+    ]
     await todowrite({ todos: agentTodos })
 
-    // 根据实际场景决定并行或串行调用
-    // 简单任务（<3分）：串行调用，避免过度并行
-    // 中等/复杂任务（≥3分）：并行调用，提高效率
-    const shouldParallel = complexity.score >= 3
+    // ============ STEP 2.1: Explore（核心，始终需要） ============
+    if (subAgentsToCall.includes('explore')) {
+      const agentStart = getCurrentTime()
+      const agentStartMs = new Date(agentStart).getTime()
+      await todowrite({
+        todos: [
+          { id: '2', content: 'Explore: 代码库探索', status: 'in_progress', priority: 'high' },
+          { id: '3', content: 'Librarian: 外部研究（条件触发）', status: 'pending', priority: 'medium' },
+          { id: '4', content: 'Oracle: 架构决策（中高复杂度）', status: 'pending', priority: 'medium' },
+          { id: '6', content: '生成工作计划', status: 'pending', priority: 'high' }
+        ]
+      })
 
-    if (shouldParallel) {
-      // 并行调用 Sub-Agents（中等/复杂任务）
-      parallelResults = await Promise.all(
-        subAgentsToCall.map(async (agentType) => {
-          const agentStart = getCurrentTime()
-          const agentStartMs = new Date(agentStart).getTime()
+      const taskParams = {
+        subagent_type: 'explore',
+        description: 'Explore: 代码库探索',
+        prompt: `Task context: ${metisOutput}\n\n# Task\nPerform explore analysis for: ${userRequest}\n\nNote: Before exploring, check if AGENTS.md exists in the target directory and read it first for project-specific agent configuration.`
+      }
 
-          // 按需更新：开始前更新为 in_progress
-          await todowrite({
-            todos: [
-              ...subAgentsToCall.filter(a => a !== agentType).map((a, i) => ({
-                id: String(2 + subAgentsToCall.indexOf(a)),
-                content: `${getAgentDescription(a)}`,
-                status: 'in_progress',
-                priority: getAgentPriority(a)
-              })),
-              {
-                id: String(2 + subAgentsToCall.indexOf(agentType)),
-                content: `${getAgentDescription(agentType)}`,
-                status: 'in_progress',
-                priority: getAgentPriority(agentType)
-              },
-              { id: '6', content: '生成工作计划', status: 'pending', priority: 'high' }
-            ]
-          })
+      const result = await Task(taskParams)
+      const agentEnd = getCurrentTime()
+      const agentEndMs = new Date(agentEnd).getTime()
+      const sessionId = await extractSessionId(result)
+      const agentFilePath = await saveAgentOutput(taskName, 'explore', sessionId, result.output, agentStartMs)
+      sessionIds.Explore = sessionId
 
-          const taskParams = {
-            subagent_type: agentType,
-            description: `${getAgentDescription(agentType)}: ${agentType} analysis`,
-            prompt: `Task context: ${metisOutput}\n\n# Task\nPerform ${agentType} analysis for: ${userRequest}`
-          }
+      await appendStep(taskName, 2, 'Explore', sessionStrategy.includes('sub') ? 'Sub' : 'Current',
+                       agentStart, agentEnd, 'completed', agentFilePath)
+      await todowrite({
+        todos: [
+          { id: '2', content: 'Explore: 代码库探索', status: 'completed', priority: 'high' },
+          { id: '3', content: 'Librarian: 外部研究（条件触发）', status: 'pending', priority: 'medium' },
+          { id: '4', content: 'Oracle: 架构决策（中高复杂度）', status: 'pending', priority: 'medium' },
+          { id: '6', content: '生成工作计划', status: 'pending', priority: 'high' }
+        ]
+      })
 
-          const result = await Task(taskParams)
+      agentResults.push({ agentType: 'explore', sessionId, output: result.output, agentStart, agentEnd, agentStartMs, agentEndMs })
+    }
 
-          // ⚠️ 关键：立即记录结束时间
-          const agentEnd = getCurrentTime()
-          const agentEndMs = new Date(agentEnd).getTime()
-          const sessionId = await extractSessionId(result)
+    // ============ STEP 2.2: 判断是否需要 Librarian（基于 Explore 结果） ============
+    let needLibrarian = false
+    let librarianDecision = 'skip'
 
-          // ⚠️ 关键：使用 agentStartMs 作为文件名时间戳
-          const agentFilePath = await saveAgentOutput(taskName, agentType, sessionId, result.output, agentStartMs)
-          sessionIds[agentType.charAt(0).toUpperCase() + agentType.slice(1)] = sessionId
+    if (subAgentsToCall.includes('librarian')) {
+      // 分析 Explore 输出，判断信息是否充足
+      const exploreOutput = agentResults.find(r => r.agentType === 'explore')?.output || ''
+      const exploreKeywords = ['无法找到', 'not found', '未找到', 'insufficient', '不足', '缺少', '需要更多信息', 'need more info']
+      const isExploreInsufficient = exploreKeywords.some(kw => exploreOutput.toLowerCase().includes(kw))
 
-          await appendStep(taskName, 2 + subAgentsToCall.indexOf(agentType),
-                          agentType.charAt(0).toUpperCase() + agentType.slice(1),
-                          sessionStrategy.includes('sub') ? 'Sub' : 'Current',
-                          agentStart, agentEnd, 'completed', agentFilePath)
+      if (isExploreInsufficient || subAgentsToCall.includes('oracle')) {
+        // Explore 信息不足或需要 Oracle 分析（Oracle 需要 Librarian 输出）
+        needLibrarian = true
+      }
 
-          // 按需更新：完成后更新为 completed
-          const completedTodos = subAgentsToCall.map((a, i) => ({
-            id: String(2 + i),
-            content: `${getAgentDescription(a)}`,
-            status: a === agentType ? 'completed' : 'in_progress',
-            priority: getAgentPriority(a)
-          }))
-          completedTodos.push({ id: '6', content: '生成工作计划', status: 'pending', priority: 'high' })
-          await todowrite({ todos: completedTodos })
-
-          return { agentType, sessionId, output: result.output, agentStart, agentEnd, agentStartMs, agentEndMs }
-        })
-      )
-    } else {
-      // 串行调用 Sub-Agents（简单任务）
-      parallelResults = []
-      for (const agentType of subAgentsToCall) {
+      if (needLibrarian) {
         const agentStart = getCurrentTime()
         const agentStartMs = new Date(agentStart).getTime()
-
-        // 按需更新：开始前更新为 in_progress
         await todowrite({
           todos: [
-            {
-              id: String(2 + subAgentsToCall.indexOf(agentType)),
-              content: `${getAgentDescription(agentType)}`,
-              status: 'in_progress',
-              priority: getAgentPriority(agentType)
-            },
-            ...subAgentsToCall.filter(a => a !== agentType).map((a, i) => ({
-              id: String(2 + subAgentsToCall.indexOf(a)),
-              content: `${getAgentDescription(a)}`,
-              status: 'pending',
-              priority: getAgentPriority(a)
-            })),
+            { id: '2', content: 'Explore: 代码库探索', status: 'completed', priority: 'high' },
+            { id: '3', content: 'Librarian: 外部研究', status: 'in_progress', priority: 'medium' },
+            { id: '4', content: 'Oracle: 架构决策（中高复杂度）', status: 'pending', priority: 'medium' },
             { id: '6', content: '生成工作计划', status: 'pending', priority: 'high' }
           ]
         })
 
+        const exploreContext = agentResults.find(r => r.agentType === 'explore')?.output || ''
         const taskParams = {
-          subagent_type: agentType,
-          description: `${getAgentDescription(agentType)}: ${agentType} analysis`,
-          prompt: `Task context: ${metisOutput}\n\n# Task\nPerform ${agentType} analysis for: ${userRequest}`
+          subagent_type: 'librarian',
+          description: 'Librarian: 外部研究',
+          prompt: `Task context: ${metisOutput}\n\n# Explore Context\n${exploreContext}\n\n# Task\nPerform librarian analysis for: ${userRequest}\n\nFocus on areas where Explore found insufficient information.`
         }
 
         const result = await Task(taskParams)
-
-        // ⚠️ 关键：立即记录结束时间
         const agentEnd = getCurrentTime()
         const agentEndMs = new Date(agentEnd).getTime()
         const sessionId = await extractSessionId(result)
+        const agentFilePath = await saveAgentOutput(taskName, 'librarian', sessionId, result.output, agentStartMs)
+        sessionIds.Librarian = sessionId
 
-        // ⚠️ 关键：使用 agentStartMs 作为文件名时间戳
-        const agentFilePath = await saveAgentOutput(taskName, agentType, sessionId, result.output, agentStartMs)
-        sessionIds[agentType.charAt(0).toUpperCase() + agentType.slice(1)] = sessionId
+        await appendStep(taskName, 3, 'Librarian', sessionStrategy.includes('sub') ? 'Sub' : 'Current',
+                         agentStart, agentEnd, 'completed', agentFilePath)
+        await todowrite({
+          todos: [
+            { id: '2', content: 'Explore: 代码库探索', status: 'completed', priority: 'high' },
+            { id: '3', content: 'Librarian: 外部研究', status: 'completed', priority: 'medium' },
+            { id: '4', content: 'Oracle: 架构决策（中高复杂度）', status: 'pending', priority: 'medium' },
+            { id: '6', content: '生成工作计划', status: 'pending', priority: 'high' }
+          ]
+        })
 
-        await appendStep(taskName, 2 + subAgentsToCall.indexOf(agentType),
-                        agentType.charAt(0).toUpperCase() + agentType.slice(1),
-                        sessionStrategy.includes('sub') ? 'Sub' : 'Current',
-                        agentStart, agentEnd, 'completed', agentFilePath)
-
-        // 按需更新：完成后更新为 completed
-        const completedTodos = subAgentsToCall.map((a, i) => ({
-          id: String(2 + i),
-          content: `${getAgentDescription(a)}`,
-          status: a === agentType ? 'completed' : 'pending',
-          priority: getAgentPriority(a)
-        }))
-        completedTodos.push({ id: '6', content: '生成工作计划', status: 'pending', priority: 'high' })
-        await todowrite({ todos: completedTodos })
-
-        parallelResults.push({ agentType, sessionId, output: result.output, agentStart, agentEnd, agentStartMs, agentEndMs })
+        agentResults.push({ agentType: 'librarian', sessionId, output: result.output, agentStart, agentEnd, agentStartMs, agentEndMs })
+        librarianDecision = 'executed'
+      } else {
+        await appendStep(taskName, 2.5, 'Librarian 判断', 'Current', getCurrentTime(), getCurrentTime(), 'skipped', null, null)
+        await todowrite({
+          todos: [
+            { id: '2', content: 'Explore: 代码库探索', status: 'completed', priority: 'high' },
+            { id: '3', content: 'Librarian: 外部研究（已跳过 - Explore 信息充足）', status: 'cancelled', priority: 'medium' },
+            { id: '4', content: 'Oracle: 架构决策（中高复杂度）', status: 'pending', priority: 'medium' },
+            { id: '6', content: '生成工作计划', status: 'pending', priority: 'high' }
+          ]
+        })
       }
     }
 
-    // 所有 Sub-Agent 完成后，更新所有为 completed
-    const allCompletedTodos = subAgentsToCall.map((agentType, index) => ({
-      id: String(2 + index),
-      content: `${getAgentDescription(agentType)}`,
-      status: 'completed',
-      priority: getAgentPriority(agentType)
-    }))
-    allCompletedTodos.push({ id: '6', content: '生成工作计划', status: 'pending', priority: 'high' })
-    await todowrite({ todos: allCompletedTodos })
+    // ============ STEP 2.3: Oracle（仅中高复杂度任务：score ≥ 3） ============
+    const needOracle = complexity.score >= 3 && subAgentsToCall.includes('oracle')
+
+    if (needOracle) {
+      const agentStart = getCurrentTime()
+      const agentStartMs = new Date(agentStart).getTime()
+      await todowrite({
+        todos: [
+          { id: '2', content: 'Explore: 代码库探索', status: 'completed', priority: 'high' },
+          { id: '3', content: `Librarian: 外部研究（${librarianDecision === 'executed' ? '已执行' : '已跳过'}）`, status: librarianDecision === 'executed' ? 'completed' : 'cancelled', priority: 'medium' },
+          { id: '4', content: 'Oracle: 架构决策', status: 'in_progress', priority: 'medium' },
+          { id: '6', content: '生成工作计划', status: 'pending', priority: 'high' }
+        ]
+      })
+
+      // Oracle 分析 Explore + Librarian 的输出
+      const exploreContext = agentResults.find(r => r.agentType === 'explore')?.output || ''
+      const librarianContext = agentResults.find(r => r.agentType === 'librarian')?.output || ''
+
+      const taskParams = {
+        subagent_type: 'oracle',
+        description: 'Oracle: 架构决策',
+        prompt: `Task context: ${metisOutput}\n\n# Explore Context\n${exploreContext}\n\n# Librarian Context\n${librarianContext}\n\n# Task\nPerform oracle analysis for: ${userRequest}\n\nAnalyze the exploration and research results to provide architectural decisions and strategic recommendations.`
+      }
+
+      const result = await Task(taskParams)
+      const agentEnd = getCurrentTime()
+      const agentEndMs = new Date(agentEnd).getTime()
+      const sessionId = await extractSessionId(result)
+      const agentFilePath = await saveAgentOutput(taskName, 'oracle', sessionId, result.output, agentStartMs)
+      sessionIds.Oracle = sessionId
+
+      await appendStep(taskName, 4, 'Oracle', sessionStrategy.includes('sub') ? 'Sub' : 'Current',
+                       agentStart, agentEnd, 'completed', agentFilePath)
+      await todowrite({
+        todos: [
+          { id: '2', content: 'Explore: 代码库探索', status: 'completed', priority: 'high' },
+          { id: '3', content: `Librarian: 外部研究（${librarianDecision === 'executed' ? '已执行' : '已跳过'}）`, status: librarianDecision === 'executed' ? 'completed' : 'cancelled', priority: 'medium' },
+          { id: '4', content: 'Oracle: 架构决策', status: 'completed', priority: 'medium' },
+          { id: '6', content: '生成工作计划', status: 'pending', priority: 'high' }
+        ]
+      })
+
+      agentResults.push({ agentType: 'oracle', sessionId, output: result.output, agentStart, agentEnd, agentStartMs, agentEndMs })
+    } else {
+      await todowrite({
+        todos: [
+          { id: '2', content: 'Explore: 代码库探索', status: 'completed', priority: 'high' },
+          { id: '3', content: `Librarian: 外部研究（${librarianDecision === 'executed' ? '已执行' : '已跳过'}）`, status: librarianDecision === 'executed' ? 'completed' : 'cancelled', priority: 'medium' },
+          { id: '4', content: 'Oracle: 架构决策（已跳过 - 简单任务）', status: 'cancelled', priority: 'medium' },
+          { id: '6', content: '生成工作计划', status: 'pending', priority: 'high' }
+        ]
+      })
+    }
+
+    // ============ STEP 2.4: Multimodal-Looker（独立，可并行） ============
+    if (subAgentsToCall.includes('multimodal-looker')) {
+      const agentStart = getCurrentTime()
+      const agentStartMs = new Date(agentStart).getTime()
+      await todowrite({
+        todos: agentResults.map((r, i) => ({
+          id: String(i + 2),
+          content: r.agentType.charAt(0).toUpperCase() + r.agentType.slice(1) + ': ' + getAgentDescription(r.agentType),
+          status: 'completed',
+          priority: getAgentPriority(r.agentType)
+        })).concat([
+          { id: String(agentResults.length + 2), content: 'Multimodal-Looker: 媒体分析', status: 'in_progress', priority: 'low' },
+          { id: '6', content: '生成工作计划', status: 'pending', priority: 'high' }
+        ])
+      })
+
+      const taskParams = {
+        subagent_type: 'multimodal-looker',
+        description: 'Multimodal-Looker: 媒体分析',
+        prompt: `Task context: ${metisOutput}\n\n# Task\nPerform multimodal analysis for: ${userRequest}`
+      }
+
+      const result = await Task(taskParams)
+      const agentEnd = getCurrentTime()
+      const agentEndMs = new Date(agentEnd).getTime()
+      const sessionId = await extractSessionId(result)
+      const agentFilePath = await saveAgentOutput(taskName, 'multimodal-looker', sessionId, result.output, agentStartMs)
+      sessionIds.MultimodalLooker = sessionId
+
+      await appendStep(taskName, agentResults.length + 2, 'Multimodal-Looker', sessionStrategy.includes('sub') ? 'Sub' : 'Current',
+                       agentStart, agentEnd, 'completed', agentFilePath)
+      await todowrite({
+        todos: agentResults.map((r, i) => ({
+          id: String(i + 2),
+          content: r.agentType.charAt(0).toUpperCase() + r.agentType.slice(1) + ': ' + getAgentDescription(r.agentType),
+          status: 'completed',
+          priority: getAgentPriority(r.agentType)
+        })).concat([
+          { id: String(agentResults.length + 2), content: 'Multimodal-Looker: 媒体分析', status: 'completed', priority: 'low' },
+          { id: '6', content: '生成工作计划', status: 'pending', priority: 'high' }
+        ])
+      })
+
+      agentResults.push({ agentType: 'multimodal-looker', sessionId, output: result.output, agentStart, agentEnd, agentStartMs, agentEndMs })
+    }
   }
+
+  // 所有 Sub-Agent 完成
+  timings.parallelEnd = getCurrentTime()
   
   timings.parallelEnd = getCurrentTime()
   
@@ -999,12 +1135,12 @@ async function orchestrateWorkPlan(taskName, userRequest, complexity, sessionStr
   const planStart = getCurrentTime()
   timings.planStart = planStart
 
-  const planContent = generatePlanFromOutputs(taskName, userRequest, metisOutput, parallelResults, metisAnalysis, complexity)
+  const planContent = generatePlanFromOutputs(taskName, userRequest, metisOutput, agentResults, metisAnalysis, complexity)
   const planTimestamp = new Date(planStart).getTime()
   const planPath = `.plans/${taskName}/v1.0.0-${planTimestamp}.md`
   await write({ content: planContent, filePath: planPath })
 
-  await appendStep(taskName, subAgentsToCall.length > 0 ? 2 + subAgentsToCall.length : 2, '计划生成', 'Current', planStart, getCurrentTime(), 'completed', planPath)
+  await appendStep(taskName, agentResults && agentResults.length > 0 ? 2 + agentResults.length : 2, '计划生成', 'Current', planStart, getCurrentTime(), 'completed', planPath)
   await todowrite({ todos: [{ id: '6', content: '生成工作计划', status: 'completed', priority: 'high' }] })
   timings.planEnd = getCurrentTime()
   
@@ -1045,14 +1181,14 @@ async function orchestrateWorkPlan(taskName, userRequest, complexity, sessionStr
 
     if (userDecision === "跳过审查并结束") {
       // 用户选择跳过审查，直接结束并告知用户计划存储位置
-      await finalizeAndReturn(taskName, planPath, stepStartTime, timings, interactionStart, parallelResults, subAgentsToCall, subAgentSelection, userDecision)
+      await finalizeAndReturn(taskName, planPath, stepStartTime, timings, interactionStart, agentResults, subAgentsToCall, subAgentSelection, userDecision)
       return { planPath, sessionIds, subAgentSelection }
     }
   } catch (e) {
     // 用户跳过或出错，直接结束并告知用户计划存储位置
     timings.userInteractionEnd = getCurrentTime()
     await appendStep(taskName, 4, '用户决策', 'Current', getCurrentTime(), getCurrentTime(), 'skipped')
-    await finalizeAndReturn(taskName, planPath, stepStartTime, timings, interactionStart, parallelResults, subAgentsToCall, subAgentSelection, '跳过审查并结束')
+    await finalizeAndReturn(taskName, planPath, stepStartTime, timings, interactionStart, agentResults, subAgentsToCall, subAgentSelection, '跳过审查并结束')
     return { planPath, sessionIds, subAgentSelection }
   }
 
@@ -1071,25 +1207,28 @@ async function orchestrateWorkPlan(taskName, userRequest, complexity, sessionStr
   timings.momusEnd = getCurrentTime()
 
   // Momus 审查完成后，直接结束并告知用户计划存储位置
-  await finalizeAndReturn(taskName, planPath, stepStartTime, timings, interactionStart, parallelResults, subAgentsToCall, subAgentSelection, userDecision)
+  await finalizeAndReturn(taskName, planPath, stepStartTime, timings, interactionStart, agentResults, subAgentsToCall, subAgentSelection, userDecision)
   return { planPath, sessionIds, subAgentSelection }
 
   // 辅助函数：Finalize 并返回
-  async function finalizeAndReturn(taskName, planPath, stepStartTime, timings, interactionStart, parallelResults, subAgentsToCall, subAgentSelection) {
+  async function finalizeAndReturn(taskName, planPath, stepStartTime, timings, interactionStart, agentResults, subAgentsToCall, subAgentSelection, userDecision) {
     const finalizeStart = getCurrentTime()
 
-    // 计算各阶段耗时
-    const initDuration = calculateDuration(timings.initStart, timings.initEnd)
-    const metisDuration = calculateDuration(timings.metisStart, timings.metisEnd)
-    const parallelDuration = parallelResults.length > 0 ? calculateDuration(timings.parallelStart, timings.parallelEnd) : '0s'
+    // 计算各阶段耗时（使用统一的时间戳）
     const initMs = calculateDurationMs(timings.initStart, timings.initEnd)
     const metisMs = calculateDurationMs(timings.metisStart, timings.metisEnd)
-    const parallelMs = parallelResults.length > 0 ? calculateDurationMs(timings.parallelStart, timings.parallelEnd) : 0
-    const planMs = calculateDurationMs(timings.planStart, timings.planEnd)
+    const parallelMs = timings.parallelStart && timings.parallelEnd ? calculateDurationMs(timings.parallelStart, timings.parallelEnd) : 0
+    const planMs = timings.planStart && timings.planEnd ? calculateDurationMs(timings.planStart, timings.planEnd) : 0
+
+    // 格式化持续时间（秒或分钟）
+    const initDuration = calculateDuration(timings.initStart, timings.initEnd)
+    const metisDuration = calculateDuration(timings.metisStart, timings.metisEnd)
+    const parallelDuration = timings.parallelStart && timings.parallelEnd ? calculateDuration(timings.parallelStart, timings.parallelEnd) : '0s'
+    const planDuration = timings.planStart && timings.planEnd ? calculateDuration(timings.planStart, timings.planEnd) : '0s'
 
     // 计算顺序执行的总时间（用于并行效率分析）
-    const seqTotalMs = parallelResults.length > 0
-      ? parallelResults.reduce((sum, r) => {
+    const seqTotalMs = agentResults && agentResults.length > 0
+      ? agentResults.reduce((sum, r) => {
         const durationMs = r.agentEndMs && r.agentStartMs ? (r.agentEndMs - r.agentStartMs) : 0
         return sum + durationMs
       }, 0)
@@ -1125,17 +1264,18 @@ async function orchestrateWorkPlan(taskName, userRequest, complexity, sessionStr
 ## 总耗时
 
 **文件记录时间**: ${totalDuration}（从目录创建到计划文件写入完成）
+**实际总耗时**: ${Math.round(totalMs / 1000)}s (${totalMs}ms)
 
 ## 耗时分解
 
 | 阶段 | 耗时 | 占比 | 说明 |
 |------|------|------|------|
-| 初始化 | ${initDuration} | ${totalMs > 0 ? Math.round((initMs / totalMs) * 100) : 0}% | 创建目录、初始化文件 |
-| Metis 分析 | ${metisDuration} | ${totalMs > 0 ? Math.round((metisMs / totalMs) * 100) : 0}% | 意图分类和 gap 识别 |
+| 初始化 | ${initDuration} (${initMs}ms) | ${totalMs > 0 ? Math.round((initMs / totalMs) * 100) : 0}% | 创建目录、初始化文件 |
+| Metis 分析 | ${metisDuration} (${metisMs}ms) | ${totalMs > 0 ? Math.round((metisMs / totalMs) * 100) : 0}% | 意图分类和 gap 识别 |
 | Sub-Agent 选择 | ${calculateDuration(interactionStart, interactionEnd)} | - | 用户决策等待时间 |
-| Sub-Agent 调用 | ${parallelDuration} | ${totalMs > 0 ? Math.round((parallelMs / totalMs) * 100) : 0}% | 调用 ${subAgentsToCall.length || 0} 个 Sub-Agent（${subAgentSelection.mode || 'none'}） |
-| 计划生成 | ${planDuration} | ${totalMs > 0 ? Math.round((planMs / totalMs) * 100) : 0}% | 综合输出生成工作计划 |
-| 用户决策 | ${userDecision ? calculateDuration(userInteractionStart, userInteractionEnd) : '0s'} | - | Momus 审查和其他用户决策 |
+| Sub-Agent 调用 | ${parallelDuration} (${parallelMs}ms) | ${totalMs > 0 ? Math.round((parallelMs / totalMs) * 100) : 0}% | 调用 ${subAgentsToCall.length || 0} 个 Sub-Agent（${subAgentSelection.mode || 'none'}） |
+| 计划生成 | ${planDuration} (${planMs}ms) | ${totalMs > 0 ? Math.round((planMs / totalMs) * 100) : 0}% | 综合输出生成工作计划 |
+| 用户决策 | ${userDecision ? calculateDuration(timings.userInteractionStart, timings.userInteractionEnd) : '0s'} | - | Momus 审查和其他用户决策 |
 | Momus 审查 | ${timings.momusEnd ? calculateDuration(timings.momusStart, timings.momusEnd) : '0s'} | - | 计划可执行性验证 |
 
 ${fileSystemSyncNotes}
@@ -1144,10 +1284,18 @@ ${fileSystemSyncNotes}
 - 总耗时包括所有阶段的时间，包括用户交互等待时间
 - 文件记录时间：从目录创建到计划文件写入完成
 - 并行执行效率：相比顺序执行，节省约 ${parallelMs > 0 && seqTotalMs > 0 ? Math.round((1 - parallelMs / seqTotalMs) * 100) : 0}% 时间
-  - 顺序执行总时间：${seqTotalMs > 0 ? Math.round(seqTotalMs / 1000) + 's' : '0s'}
-  - 并行执行时间：${parallelMs > 0 ? Math.round(parallelMs / 1000) + 's' : '0s'}
+  - 顺序执行总时间：${seqTotalMs > 0 ? Math.round(seqTotalMs / 1000) + 's' : '0s'} (${seqTotalMs}ms)
+  - 并行执行时间：${parallelMs > 0 ? Math.round(parallelMs / 1000) + 's' : '0s'} (${parallelMs}ms)
   - 节省时间：${seqTotalMs > 0 && parallelMs > 0 ? Math.round((seqTotalMs - parallelMs) / 1000) + 's' : '0s'}
 - 如果文件时间与调用时间差异过大（> 10s），请检查系统时钟或网络连接
+
+## 时间计算验证
+
+\`\`\`
+总耗时计算: ${Math.round(totalMs / 1000)}s
+各阶段耗时和: ${Math.round((initMs + metisMs + parallelMs + planMs) / 1000)}s
+差异: ${Math.round((totalMs - (initMs + metisMs + parallelMs + planMs)) / 1000)}s
+\`\`\`
 `
 
     await write({ content: finalStepsContent.content + totalTimeSection, filePath: stepsPath })
@@ -1163,11 +1311,11 @@ ${fileSystemSyncNotes}
   }
 }
 
-function generatePlanFromOutputs(taskName, userRequest, metisOutput, parallelResults, metisAnalysis, complexity) {
+function generatePlanFromOutputs(taskName, userRequest, metisOutput, agentResults, metisAnalysis, complexity) {
   const { intentType, recommendedAgents, recommendationReason, originalOutput } = metisAnalysis
 
-  const subAgentContributions = parallelResults.length > 0
-    ? parallelResults.map(r => `
+  const subAgentContributions = agentResults && agentResults.length > 0
+    ? agentResults.map(r => `
 ### ${r.agentType.charAt(0).toUpperCase() + r.agentType.slice(1)}
 
 ${r.output}
@@ -1200,8 +1348,8 @@ ${r.output}
 - **意图描述**: ${intentDescription[intentType] || '未知意图'}
 - **推荐 Sub-Agent**: ${recommendedAgents.length > 0 ? recommendedAgents.map(a => a.charAt(0).toUpperCase() + a.slice(1)).join(', ') : '无'}
 - **推荐理由**: ${recommendationReason}
-- **实际调用 Sub-Agent**: ${parallelResults.length > 0 ? parallelResults.map(r => r.agentType.charAt(0).toUpperCase() + r.agentType.slice(1)).join(', ') : '无'}
-- **Sub-Agent 调用模式**: ${parallelResults.length > 0 ? '并行调用' : '跳过'}
+- **实际调用 Sub-Agent**: ${agentResults && agentResults.length > 0 ? agentResults.map(r => r.agentType.charAt(0).toUpperCase() + r.agentType.slice(1)).join(', ') : '无'}
+- **Sub-Agent 调用模式**: ${agentResults && agentResults.length > 0 ? '串行调用（基于依赖关系）' : '跳过'}
 
 ### Complexity Assessment
 
@@ -1212,12 +1360,12 @@ ${complexity.forced ? `- **用户强制**: Complex (score ≥ 6, for testing sub
 
 - **策略类型**: ${complexity.strategy}
 - **Metis/Momus**: Current（当前 session）
-${parallelResults.length > 0 ? '- **Explore/Librarian/Oracle**: Sub（子 session）' : ''}
+${agentResults && agentResults.length > 0 ? '- **Explore/Librarian/Oracle**: Sub（子 session）' : ''}
 
 ### Session IDs
 
 - **Metis**: current-session
-${parallelResults.map(r => `- **${r.agentType.charAt(0).toUpperCase() + r.agentType.slice(1)}**: ${r.sessionId}`).join('\n')}
+${agentResults && agentResults.length > 0 ? agentResults.map(r => `- **${r.agentType.charAt(0).toUpperCase() + r.agentType.slice(1)}**: ${r.sessionId}`).join('\n') : ''}
 
 ---
 
@@ -1233,7 +1381,7 @@ ${parallelResults.map(r => `- **${r.agentType.charAt(0).toUpperCase() + r.agentT
 
 ### Parallel Execution
 
-${parallelResults.length > 0 ? 'Sub-Agent 并行调用：\n' + parallelResults.map(r => `- **${r.agentType.charAt(0).toUpperCase() + r.agentType.slice(1)}**: ${getAgentDescription(r.agentType)}`).join('\n') : '无并行调用'}
+${agentResults && agentResults.length > 0 ? 'Sub-Agent 调用：\n' + agentResults.map(r => `- **${r.agentType.charAt(0).toUpperCase() + r.agentType.slice(1)}**: ${getAgentDescription(r.agentType)}`).join('\n') : '无 Sub-Agent 调用'}
 
 ### Critical Path
 
@@ -1322,7 +1470,7 @@ ${subAgentContributions}
 ### Related Files
 
 - \`/.plans/${taskName}/thinks/metis-current-session-{timestamp}.md\`
-${parallelResults.map(r => `- \`/.plans/${taskName}/thinks/${r.agentType}-${r.sessionId}-{timestamp}.md\``).join('\n')}
+${agentResults && agentResults.length > 0 ? agentResults.map(r => `- \`/.plans/${taskName}/thinks/${r.agentType}-${r.sessionId}-{timestamp}.md\``).join('\n') : ''}
 - \`/.plans/${taskName}/steps.md\`
 `
 }
