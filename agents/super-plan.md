@@ -499,11 +499,11 @@ async function initStepsFile(taskName, complexity, sessionStrategy, selectedAgen
   return stepsPath
 }
 
-async function appendStep(taskName, stepNumber, subAgentName, sessionType, startTime, endTime, status, filePath = null) {
+async function appendStep(taskName, stepNumber, subAgentName, sessionType, startTime, endTime, status, filePath = null, todoId = null) {
   const stepsPath = `.plans/${taskName}/steps.md`
   const duration = calculateDuration(startTime, endTime)
   const statusIcon = status === 'completed' ? '✅ 完成' : '❌ 失败'
-  
+
   // 尝试获取文件的实际修改时间
   let fileTime = '-'
   if (filePath) {
@@ -519,16 +519,39 @@ async function appendStep(taskName, stepNumber, subAgentName, sessionType, start
       fileTime = '-'
     }
   }
-  
+
   const newLine = `| ${stepNumber} | ${subAgentName} | ${sessionType} | ${getLocalTime(startTime)} | ${getLocalTime(endTime)} | ~${duration} | ${fileTime} | ${statusIcon} |`
-  
+
   const existingContent = await read({ filePath: stepsPath })
   const updatedContent = existingContent.content.replace(
     /(\n## Session IDs 记录)/,
     `${newLine}\n$1`
   )
-  
+
   await write({ content: updatedContent, filePath: stepsPath })
+
+  // 如果提供了 todoId，自动更新对应的 todo 状态
+  if (todoId) {
+    try {
+      const todosPath = `.plans/${taskName}/.todos.json`
+      // 注意：这里无法直接读取当前 todos，实际实现需要使用 todowrite 工具
+      // 由于 todowrite 工具会覆盖整个 todos 列表，我们需要在其他地方处理
+      // 这个参数只是一个标记，实际更新由调用者处理
+    } catch (e) {
+      // 忽略错误，继续执行
+    }
+  }
+}
+
+// 更新单个 todo 的状态
+async function updateTodoStatus(taskName, todoId, newStatus) {
+  try {
+    // 注意：todowrite 工具需要传入完整的 todos 列表
+    // 由于无法直接读取当前 todos，我们需要在调用者处维护 todos 列表
+    // 这个函数只是一个占位符，实际实现需要在主工作流中处理
+  } catch (e) {
+    // 忽略错误，继续执行
+  }
 }
 
 async function extractSessionId(result) {
@@ -840,8 +863,9 @@ async function orchestrateWorkPlan(taskName, userRequest, complexity, sessionStr
   let parallelResults = []
   const parallelStart = getCurrentTime()
   timings.parallelStart = parallelStart
-  
+
   if (subAgentsToCall.length > 0) {
+    // 创建初始 todos（状态：pending）
     const agentTodos = subAgentsToCall.map((agentType, index) => ({
       id: String(2 + index),
       content: `${getAgentDescription(agentType)}`,
@@ -850,16 +874,28 @@ async function orchestrateWorkPlan(taskName, userRequest, complexity, sessionStr
     }))
     agentTodos.push({ id: '6', content: '生成工作计划', status: 'pending', priority: 'high' })
     await todowrite({ todos: agentTodos })
-    
+
+    // 更新状态为 in_progress（在调用 Sub-Agent 之前）
+    const inProgressTodos = subAgentsToCall.map((agentType, index) => ({
+      id: String(2 + index),
+      content: `${getAgentDescription(agentType)}`,
+      status: 'in_progress',
+      priority: getAgentPriority(agentType)
+    }))
+    inProgressTodos.push({ id: '6', content: '生成工作计划', status: 'pending', priority: 'high' })
+    await todowrite({ todos: inProgressTodos })
+
+    // 并行调用 Sub-Agents
     parallelResults = await Promise.all(
       subAgentsToCall.map(async (agentType) => {
         const agentStart = getCurrentTime()
-        
+
         const taskParams = {
           subagent_type: agentType,
+          description: `${getAgentDescription(agentType)}: ${agentType} analysis`,
           prompt: `Task context: ${metisResult.output}\n\nPerform ${agentType} analysis.`
         }
-        
+
         const result = await Task(taskParams)
         
         const agentEnd = getCurrentTime()
@@ -875,13 +911,15 @@ async function orchestrateWorkPlan(taskName, userRequest, complexity, sessionStr
         return { agentType, sessionId, output: result.output, agentStart, agentEnd }
       })
     )
-    
+
+    // 更新 todos 为 completed（所有 Sub-Agent 完成后）
     const completedTodos = subAgentsToCall.map((agentType, index) => ({
       id: String(2 + index),
       content: `${getAgentDescription(agentType)}`,
       status: 'completed',
       priority: getAgentPriority(agentType)
     }))
+    completedTodos.push({ id: '6', content: '生成工作计划', status: 'pending', priority: 'high' })
     await todowrite({ todos: completedTodos })
   }
   
@@ -918,12 +956,32 @@ async function orchestrateWorkPlan(taskName, userRequest, complexity, sessionStr
   // ============ STEP 2: 并行调用 Sub-Agents ============
   const parallelStart = getCurrentTime()
   const subAgents = ['explore', 'librarian', 'oracle', 'multimodal-looker']
-  
+
+  // 创建初始 todos（状态：pending）
+  const agentTodos = subAgents.map((agentType, index) => ({
+    id: String(2 + index),
+    content: `${getAgentDescription(agentType)}`,
+    status: 'pending',
+    priority: getAgentPriority(agentType)
+  }))
+  await todowrite({ todos: agentTodos })
+
+  // 更新状态为 in_progress（在调用 Sub-Agent 之前）
+  const inProgressTodos = subAgents.map((agentType, index) => ({
+    id: String(2 + index),
+    content: `${getAgentDescription(agentType)}`,
+    status: 'in_progress',
+    priority: getAgentPriority(agentType)
+  }))
+  await todowrite({ todos: inProgressTodos })
+
+  // 并行调用 Sub-Agents
   const parallelResults = await Promise.all(
     subAgents.map(async (agentType) => {
       const agentStart = getCurrentTime()
       const result = await Task({
         subagent_type: agentType,
+        description: `${getAgentDescription(agentType)}: ${agentType} analysis`,
         prompt: `Task context: ${metisResult.output}\n\nPerform ${agentType} analysis.`
       })
       const sessionId = await extractSessionId(result)
@@ -932,12 +990,13 @@ async function orchestrateWorkPlan(taskName, userRequest, complexity, sessionStr
       return { agentType, sessionId, output: result.output, agentStart }
     })
   )
-  
+
   for (let i = 0; i < parallelResults.length; i++) {
     const { agentType, agentStart } = parallelResults[i]
     await appendStep(taskName, 2 + i, agentType.charAt(0).toUpperCase() + agentType.slice(1), 'Sub', agentStart, getCurrentTime(), 'completed')
   }
-  
+
+  // 更新 todos 为 completed（所有 Sub-Agent 完成后）
   await todowrite({
     todos: [
       { id: '2', content: 'Explore: 代码库探索', status: 'completed', priority: 'high' },
