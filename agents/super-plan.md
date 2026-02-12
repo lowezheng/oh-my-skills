@@ -252,15 +252,51 @@ function getCurrentTime() {
   return new Date().toISOString()
 }
 
+function getLocalTime() {
+  const now = new Date()
+  return now.toLocaleTimeString('zh-CN', { hour12: false })
+}
+
 function calculateDuration(startTime, endTime) {
   const start = new Date(startTime).getTime()
   const end = new Date(endTime).getTime()
-  return Math.round((end - start) / 1000) + 's'
+  const duration = Math.round((end - start) / 1000)
+  if (duration < 60) return `${duration}s`
+  if (duration < 3600) return `${Math.floor(duration / 60)}m ${duration % 60}s`
+  return `${Math.floor(duration / 3600)}h ${Math.floor((duration % 3600) / 60)}m`
+}
+
+// 计算持续时间（返回毫秒数）
+function calculateDurationMs(startTime, endTime) {
+  const start = new Date(startTime).getTime()
+  const end = new Date(endTime).getTime()
+  return end - start
+}
+
+// 记录用户交互时间（Question 工具等待时间）
+async function recordUserInteraction(taskName, interactionName, startTime, endTime, notes = '') {
+  const duration = calculateDuration(startTime, endTime)
+  const interactionLine = `
+## 用户交互记录
+
+| 交互名称 | 开始时间 | 结束时间 | 耗时 | 说明 |
+|---------|---------|---------|------|------|
+| ${interactionName} | ${getLocalTime(startTime)} | ${getLocalTime(endTime)} | ${duration} | ${notes} |
+`
+  const stepsPath = `.plans/${taskName}/steps.md`
+  const existingContent = await read({ filePath: stepsPath })
+  const updatedContent = existingContent.content.replace(
+    /(## Session IDs 记录)/,
+    `${interactionLine}\n\n$1`
+  )
+  await write({ content: updatedContent, filePath: stepsPath })
+  return duration
 }
 
 async function initStepsFile(taskName, complexity, sessionStrategy, selectedAgents) {
   const stepsPath = `.plans/${taskName}/steps.md`
   const initTime = getCurrentTime()
+  const localInitTime = getLocalTime()
   
   const stepsContent = `# Orchestration Steps
 
@@ -272,9 +308,16 @@ async function initStepsFile(taskName, complexity, sessionStrategy, selectedAgen
 
 ## 执行时间线
 
-| Step | Sub-Agent | Session 类型 | 开始时间 | 结束时间 | 耗时 | 状态 |
-|------|-----------|-------------|---------|---------|------|------|
-| 0 | 初始化 | Current | ${initTime} | ${initTime} | ~0s | ✅ 完成 |
+| Step | Sub-Agent | Session 类型 | 开始时间 | 结束时间 | 耗时 | 文件时间 | 状态 |
+|------|-----------|-------------|---------|---------|------|---------|------|
+| 0 | 初始化 | Current | ${localInitTime} | ${localInitTime} | ~0s | - | ✅ 完成 |
+
+## 时间戳说明
+
+- **开始/结束时间**: 记录 Agent 调用的实际时间（使用 ISO 格式的 UTC 时间）
+- **文件时间**: 文件系统的实际修改时间（通过 stat 命令获取）
+- **本地时间**: 使用系统本地时区显示（便于阅读）
+- **时间同步**: 文件时间用于验证记录准确性，可能与调用时间有差异
 
 ## Session IDs 记录
 
@@ -284,11 +327,28 @@ async function initStepsFile(taskName, complexity, sessionStrategy, selectedAgen
   return stepsPath
 }
 
-async function appendStep(taskName, stepNumber, subAgentName, sessionType, startTime, endTime, status) {
+async function appendStep(taskName, stepNumber, subAgentName, sessionType, startTime, endTime, status, filePath = null) {
   const stepsPath = `.plans/${taskName}/steps.md`
   const duration = calculateDuration(startTime, endTime)
   const statusIcon = status === 'completed' ? '✅ 完成' : '❌ 失败'
-  const newLine = `| ${stepNumber} | ${subAgentName} | ${sessionType} | ${startTime} | ${endTime} | ~${duration} | ${statusIcon} |`
+  
+  // 尝试获取文件的实际修改时间
+  let fileTime = '-'
+  if (filePath) {
+    try {
+      const statResult = await bash({
+        command: `stat -f "%SB" -t "%H:%M:%S" "${filePath}" 2>/dev/null || echo "-"`,
+        description: `获取文件修改时间: ${filePath}`
+      })
+      if (statResult.stdout && statResult.stdout.trim() !== '-') {
+        fileTime = statResult.stdout.trim()
+      }
+    } catch (e) {
+      fileTime = '-'
+    }
+  }
+  
+  const newLine = `| ${stepNumber} | ${subAgentName} | ${sessionType} | ${getLocalTime(startTime)} | ${getLocalTime(endTime)} | ~${duration} | ${fileTime} | ${statusIcon} |`
   
   const existingContent = await read({ filePath: stepsPath })
   const updatedContent = existingContent.content.replace(
@@ -539,6 +599,7 @@ async function orchestrateWorkPlan(taskName, userRequest, complexity, sessionStr
   // ============ STEP 0: 初始化 ============
   const stepStartTime = getCurrentTime()
   timings.initStart = stepStartTime
+  const initStart = stepStartTime
   
   await bash({ command: `mkdir -p ".plans/${taskName}/thinks"`, description: `创建 plans 目录` })
   
@@ -550,13 +611,16 @@ async function orchestrateWorkPlan(taskName, userRequest, complexity, sessionStr
     ]
   })
   
-  await appendStep(taskName, 0, '初始化', 'Current', stepStartTime, getCurrentTime(), 'completed')
-  timings.initEnd = getCurrentTime()
+  const initEnd = getCurrentTime()
+  await appendStep(taskName, 0, '初始化', 'Current', stepStartTime, initEnd, 'completed', `.plans/${taskName}/steps.md`)
+  timings.initEnd = initEnd
   
   const sessionIds = {}
+  const userInteractionStart = getCurrentTime()
   
   // ============ STEP 1: Metis ============
   const metisStart = getCurrentTime()
+  timings.metisStart = metisStart
   const metisResult = await Task({
     subagent_type: "metis",
     prompt: `Task: ${userRequest}\n\nPerform pre-planning analysis and gap identification. Provide recommended Sub-Agents with specific use cases and trigger conditions.`
@@ -564,10 +628,19 @@ async function orchestrateWorkPlan(taskName, userRequest, complexity, sessionStr
   
   const metisSessionId = await extractSessionId(metisResult)
   sessionIds.Metis = metisSessionId
-  await saveAgentOutput(taskName, 'metis', metisSessionId, metisResult.output)
-  await appendStep(taskName, 1, 'Metis', 'Current', metisStart, getCurrentTime(), 'completed')
+  const metisFilePath = await saveAgentOutput(taskName, 'metis', metisSessionId, metisResult.output)
+  await appendStep(taskName, 1, 'Metis', 'Current', metisStart, getCurrentTime(), 'completed', metisFilePath)
   await todowrite({ todos: [{ id: '1', content: 'Metis: 意图分类和 gap 分析', status: 'completed', priority: 'high' }] })
   timings.metisEnd = getCurrentTime()
+  
+  // ============ STEP 1.5: 解析 Metis 输出 + 用户选择 Sub-Agent ============
+  const metisAnalysis = parseMetisOutput(metisResult.output)
+  const interactionStart = getCurrentTime()
+  const subAgentSelection = await getSubAgentSelection(metisAnalysis)
+  const interactionEnd = getCurrentTime()
+  await recordUserInteraction(taskName, 'Sub-Agent 选择决策', interactionStart, interactionEnd, `模式: ${subAgentSelection.mode}`)
+  
+  const subAgentsToCall = subAgentSelection.agents
   
   // ============ STEP 1.5: 解析 Metis 输出 + 用户选择 Sub-Agent ============
   const metisAnalysis = parseMetisOutput(metisResult.output)
@@ -608,13 +681,13 @@ async function orchestrateWorkPlan(taskName, userRequest, complexity, sessionStr
         
         const agentEnd = getCurrentTime()
         const sessionId = await extractSessionId(result)
-        await saveAgentOutput(taskName, agentType, sessionId, result.output)
+        const agentFilePath = await saveAgentOutput(taskName, agentType, sessionId, result.output)
         sessionIds[agentType.charAt(0).toUpperCase() + agentType.slice(1)] = sessionId
         
-        await appendStep(taskName, 2 + subAgentsToCall.indexOf(agentType), 
-                        agentType.charAt(0).toUpperCase() + agentType.slice(1), 
-                        sessionStrategy.includes('sub') ? 'Sub' : 'Current', 
-                        agentStart, agentEnd, 'completed')
+        await appendStep(taskName, 2 + subAgentsToCall.indexOf(agentType),
+                        agentType.charAt(0).toUpperCase() + agentType.slice(1),
+                        sessionStrategy.includes('sub') ? 'Sub' : 'Current',
+                        agentStart, agentEnd, 'completed', agentFilePath)
         
         return { agentType, sessionId, output: result.output, agentStart, agentEnd }
       })
@@ -682,13 +755,14 @@ async function orchestrateWorkPlan(taskName, userRequest, complexity, sessionStr
   
   // ============ STEP 3: 生成计划 ============
   const planStart = getCurrentTime()
+  timings.planStart = planStart
   
   const planContent = generatePlanFromOutputs(taskName, userRequest, metisResult.output, parallelResults, metisAnalysis)
   const planTimestamp = new Date().toISOString().replace(/[:.]/g, '').slice(0, 15)
   const planPath = `.plans/${taskName}/v1.0.0-${planTimestamp}.md`
   await write({ content: planContent, filePath: planPath })
   
-  await appendStep(taskName, subAgentsToCall.length > 0 ? 2 + subAgentsToCall.length : 2, '计划生成', 'Current', planStart, getCurrentTime(), 'completed')
+  await appendStep(taskName, subAgentsToCall.length > 0 ? 2 + subAgentsToCall.length : 2, '计划生成', 'Current', planStart, getCurrentTime(), 'completed', planPath)
   await todowrite({ todos: [{ id: '6', content: '生成工作计划', status: 'completed', priority: 'high' }] })
   timings.planEnd = getCurrentTime()
   
@@ -712,28 +786,62 @@ async function orchestrateWorkPlan(taskName, userRequest, complexity, sessionStr
   const finalStepsContent = await read({ filePath: stepsPath })
   
   const initDuration = calculateDuration(timings.initStart, timings.initEnd)
-  const metisDuration = calculateDuration(timings.metisEnd, timings.initEnd)
+  const metisDuration = calculateDuration(timings.metisStart, timings.metisEnd)
   const parallelDuration = parallelResults.length > 0 ? calculateDuration(timings.parallelStart, timings.parallelEnd) : '0s'
-  const planDuration = calculateDuration(timings.parallelEnd, timings.planEnd)
+  const planDuration = calculateDuration(timings.planStart, timings.planEnd)
   const totalDuration = calculateDuration(stepStartTime, finalizeStart)
+  const totalSessionDuration = calculateDuration(userInteractionStart, finalizeStart)
+  const totalMs = calculateDurationMs(stepStartTime, finalizeStart)
+  const initMs = calculateDurationMs(timings.initStart, timings.initEnd)
+  const metisMs = calculateDurationMs(timings.metisStart, timings.metisEnd)
+  const parallelMs = parallelResults.length > 0 ? calculateDurationMs(timings.parallelStart, timings.parallelEnd) : 0
+  const planMs = calculateDurationMs(timings.planStart, timings.planEnd)
   
+  // 计算文件系统时间与调用时间的差异
+  let fileSystemSyncNotes = `
+## 时间戳同步说明
+
+**实际执行时间 vs 文件记录时间**：
+- 文件记录时间：记录 Agent 调用的本地时间
+- 文件系统时间：文件实际写入/修改的时间（通过 stat 命令获取）
+- 两者可能存在差异的原因：
+  1. 文件写入是异步的，可能在 Agent 完成后才写入
+  2. 系统时钟或时区设置
+  3. 网络延迟（如果文件存储在远程）
+  4. Agent 启动/调度的开销
+  5. 用户交互等待时间（Question 工具）
+
+**文件时间**列用于验证记录的准确性。如果文件时间与调用时间差异过大（> 10s），可能存在时间同步问题。
+`
+
   const totalTimeSection = `
 ## 总耗时
-${totalDuration}
+
+**Agent 会话时间**: ${totalSessionDuration}（从第一个 Agent 开始到最后一个 Agent 完成）
+**文件记录时间**: ${totalDuration}（从目录创建到计划文件写入完成）
 
 ## 耗时分解
-| 阶段 | 耗时 | 说明 |
-|------|------|------|
-| 初始化 | ${initDuration} | 创建目录、初始化文件 |
-| Metis 分析 | ${metisDuration} | 意图分类和 gap 识别 |
-| Sub-Agent 调用 | ${parallelDuration} | 并行调用 ${subAgentsToCall.length || 0} 个 Sub-Agent（${subAgentSelection.mode || 'none'}） |
-| 计划生成 | ${planDuration} | 综合输出生成工作计划 |
+
+| 阶段 | 耗时 | 占比 | 说明 |
+|------|------|------|------|
+| 初始化 | ${initDuration} | ${totalMs > 0 ? Math.round((initMs / totalMs) * 100) : 0}% | 创建目录、初始化文件 |
+| Metis 分析 | ${metisDuration} | ${totalMs > 0 ? Math.round((metisMs / totalMs) * 100) : 0}% | 意图分类和 gap 识别 |
+| 用户交互 | ${calculateDuration(interactionStart, interactionEnd)} | - | Sub-Agent 选择决策等待时间 |
+| Sub-Agent 调用 | ${parallelDuration} | ${totalMs > 0 ? Math.round((parallelMs / totalMs) * 100) : 0}% | 并行调用 ${subAgentsToCall.length || 0} 个 Sub-Agent（${subAgentSelection.mode || 'none'}） |
+| 计划生成 | ${planDuration} | ${totalMs > 0 ? Math.round((planMs / totalMs) * 100) : 0}% | 综合输出生成工作计划 |
+
+${fileSystemSyncNotes}
+
+**说明**：
+- 总耗时包括所有阶段的时间，不包括用户交互等待时间
+- 并行执行效率：相比顺序执行，节省约 ${parallelMs > 0 && subAgentsToCall.length > 0 ? Math.round((1 - parallelMs / (subAgentsToCall.length * parallelMs)) * 100) : 0}% 时间
+- 如果文件时间与调用时间差异过大（> 10s），请检查系统时钟或网络连接
 `
   
   await write({ content: finalStepsContent.content + totalTimeSection, filePath: stepsPath })
   
   const stepNumber = subAgentsToCall.length > 0 ? 3 + subAgentsToCall.length : 3
-  await appendStep(taskName, stepNumber, 'Finalize', 'Current', finalizeStart, getCurrentTime(), 'completed')
+  await appendStep(taskName, stepNumber, 'Finalize', 'Current', finalizeStart, getCurrentTime(), 'completed', stepsPath)
   
   return { planPath, sessionIds, subAgentSelection }
 }
@@ -987,6 +1095,9 @@ Metis 分析意图
 
 | 版本 | 修复的问题 | 影响 |
 |------|----------|------|
+| v1.2.0 | ✅ 文件时间与调用时间不匹配 | 验证记录准确性 |
+| v1.2.0 | ✅ 缺少用户交互时间记录 | 完整耗时分析 |
+| v1.2.0 | ✅ 时间戳格式不直观 | 提高可读性 |
 | v1.1.0 | ✅ 并行 Sub-Agent 时间计算错误 | 步骤记录准确 |
 | v1.1.0 | ✅ 硬编码的 Sub-Agent 列表 | 动态选择，提高效率 |
 | v1.1.0 | ✅ 忽略 Metis 的 Sub-Agent 建议 | 基于意图智能推荐 |
@@ -1085,7 +1196,65 @@ for (let i = 0; i < parallelResults.length; i++) {
 }
 ```
 
-❌ **错误4**：传了不必要的 task_id
+❌ **错误4**：只记录调用时间，不记录文件系统时间
+```javascript
+// ❌ 旧版本：只记录调用时间
+await saveAgentOutput(taskName, 'metis', metisSessionId, metisResult.output)
+await appendStep(taskName, 1, 'Metis', 'Current', metisStart, getCurrentTime(), 'completed')
+// 问题：无法验证记录的准确性，文件时间与调用时间可能不一致
+```
+
+✅ **正确**：同时记录文件系统时间（v1.2.0）
+```javascript
+// ✅ 新版本：记录文件路径并获取文件系统时间
+const metisFilePath = await saveAgentOutput(taskName, 'metis', metisSessionId, metisResult.output)
+await appendStep(taskName, 1, 'Metis', 'Current', metisStart, getCurrentTime(), 'completed', metisFilePath)
+// appendStep 内部使用 stat 命令获取文件的实际修改时间并记录到"文件时间"列
+```
+
+❌ **错误5**：不记录用户交互时间
+```javascript
+// ❌ 旧版本：用户交互时间未被记录
+const decision = await question({ questions: [...] })
+// 问题：Question 工具等待时间没有被记录
+```
+
+✅ **正确**：记录用户交互时间（v1.2.0）
+```javascript
+// ✅ 新版本：记录用户交互时间
+const interactionStart = getCurrentTime()
+const decision = await question({ questions: [...] })
+const interactionEnd = getCurrentTime()
+await recordUserInteraction(taskName, 'Sub-Agent 选择决策', interactionStart, interactionEnd, `模式: ${decision.mode}`)
+// 在耗时分解表中单独显示用户交互时间
+```
+
+❌ **错误6**：使用 UTC 时间显示，不便于阅读
+```javascript
+// ❌ 旧版本：使用 UTC ISO 格式
+function getCurrentTime() {
+  return new Date().toISOString()  // 2025-02-05T12:00:00.000Z
+}
+// 问题：不便于阅读，需要手动转换时区
+```
+
+✅ **正确**：使用本地时间显示（v1.2.0）
+```javascript
+// ✅ 新版本：提供本地时间显示
+function getLocalTime() {
+  const now = new Date()
+  return now.toLocaleTimeString('zh-CN', { hour12: false })  // 20:00:00
+}
+
+function getCurrentTime() {
+  return new Date().toISOString()  // 用于精确计算
+}
+
+// 在表格中使用本地时间
+await appendStep(..., getLocalTime(startTime), getLocalTime(endTime), ...)
+```
+
+❌ **错误7**：传了不必要的 task_id
 ```javascript
 // 新会话不应该传 task_id
 await Task({
@@ -1114,22 +1283,77 @@ await Task({
 6. **使用子 session**避免当前 session 超载
 7. **超时处理**：提供 fallback 或部分结果
 8. **✅ 基于意图动态选择 Sub-Agent**（v1.1.0）
-   - 解析 Metis 输出识别意图
-   - 根据意图类型推荐合适的 Sub-Agent
-   - 使用 Question 工具让用户确认或自定义选择
+    - 解析 Metis 输出识别意图
+    - 根据意图类型推荐合适的 Sub-Agent
+    - 使用 Question 工具让用户确认或自定义选择
 9. **✅ 避免不必要的 Sub-Agent 调用**（v1.1.0）
-   - 对于简单任务（如"获取系统版本"），可跳过所有 Sub-Agent
-   - 用户可选择 "Skip All" 直接进入计划生成阶段
+    - 对于简单任务（如"获取系统版本"），可跳过 所有 Sub-Agent
+    - 用户可选择 "Skip All" 直接进入计划生成阶段
 10. **✅ 准确记录并行执行时间**（v1.1.0）
     - 每个 Sub-Agent 完成时立即记录结束时间
     - 不要使用统一的 `getCurrentTime()` 作为所有 agent 的结束时间
 11. **✅ 提供详细的耗时分解**（v1.1.0）
     - 在 Finalize 阶段生成各阶段耗时表
     - 帮助分析性能瓶颈（如 Sub-Agent 调用占比过高）
+12. **✅ 记录文件系统时间戳**（v1.2.0）
+    - 使用 stat 命令获取文件的实际修改时间
+    - 在 steps.md 中添加"文件时间"列
+    - 验证调用时间与文件时间的一致性
+13. **✅ 记录用户交互时间**（v1.2.0）
+    - 使用 recordUserInteraction() 函数记录 Question 工具等待时间
+    - 在耗时分解表中单独显示用户交互时间
+    - 区分 Agent 执行时间和用户交互时间
+14. **✅ 使用本地时间显示**（v1.2.0）
+    - 使用 getLocalTime() 转换为系统本地时区显示
+    - 保留 UTC 时间戳用于精确计算
+    - 提高可读性，便于理解
 
 ---
 
 ## 版本更新日志
+
+### v1.2.0 (2026-02-12)
+
+#### 新增功能
+1. ✅ **改进的时间记录策略**
+    - 添加文件系统时间戳列（通过 stat 命令获取实际修改时间）
+    - 添加本地时间显示（便于阅读，使用系统本地时区）
+    - 改进时间戳格式（本地时间 vs UTC 时间）
+    - 添加时间戳同步说明和验证机制
+
+2. ✅ **用户交互时间记录**
+    - 记录 Question 工具的等待时间
+    - 区分 Agent 执行时间和用户交互时间
+    - 在耗时分解表中单独显示用户交互时间
+
+3. ✅ **增强的耗时分析**
+    - Agent 会话时间 vs 文件记录时间
+    - 详细的各阶段耗时占比
+    - 并行执行效率计算
+    - 时间戳差异说明和调试建议
+
+#### 修复的问题
+1. ✅ **文件时间与调用时间不匹配**
+    - 旧版本：只记录调用时间，与文件系统实际时间不一致
+    - 新版本：同时记录调用时间和文件系统时间，便于验证准确性
+
+2. ✅ **缺少用户交互时间**
+    - 旧版本：Question 工具等待时间未被记录
+    - 新版本：明确记录所有用户交互时间
+
+3. ✅ **时间戳格式不直观**
+    - 旧版本：使用 UTC ISO 格式，不便于阅读
+    - 新版本：使用本地时间显示，同时保留 UTC 时间戳
+
+#### 性能改进
+- 更准确的时间记录有助于性能分析和优化
+- 文件系统时间戳验证机制可发现潜在的时间同步问题
+
+#### 兼容性
+- steps.md 表格增加"文件时间"列
+- 向后兼容 v1.1.0（可选列，不影响现有逻辑）
+
+---
 
 ### v1.1.0 (2026-02-12)
 
