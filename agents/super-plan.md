@@ -420,39 +420,80 @@ plan_registry:
 **在调用任何 Sub-Agent 之前，必须执行以下初始化步骤**：
 
 ```typescript
-// 1. 记录会话开始时间
+// 1. 创建任务目录和 steps.md 文件
+mkdir -p ".plans/{task-name}/thinks"
+
+const stepsFilePath = `.plans/${taskName}/steps.md`
 const sessionStartTime = Date.now()
+const currentSessionId = "current-session"
 
-// 2. 初始化耗时跟踪对象
-const stepTimings = {
-  "step-1": { name: "初始化 + Metis 洞察", start: null, end: null, duration: null },
-  "step-2": { name: "并行 Sub-Agent 执行分析", start: null, end: null, duration: null },
-  "step-3": { name: "生成计划", start: null, end: null, duration: null },
-  "step-4": { name: "用户决策 + Momus 审查", start: null, end: null, duration: null },
-  "step-5": { name: "Finalize", start: null, end: null, duration: null }
-}
+// 2. 初始化 steps.md 文件
+write(stepsFilePath, `# Steps Tracking - ${taskName}
 
-// 2.1 初始化全局 call_id holder（跨步骤共享）
+**Started At**: ${new Date(sessionStartTime).toISOString()}
+**Session ID**: ${currentSessionId}
+
+---
+
+## Step 1: 初始化 + Metis 洞察
+- **Status**: 🔄 In Progress
+- **Started At**: ${new Date().toISOString()}
+
+### Sub-Agent Calls
+
+---
+
+## Step 2: 并行 Sub-Agent 执行分析
+- **Status**: ⏳ Pending
+
+### Sub-Agent Calls
+
+---
+
+## Step 3: 生成计划
+- **Status**: ⏳ Pending
+
+### Sub-Agent Calls
+
+---
+
+## Step 4: 用户决策 + Momus 审查
+- **Status**: ⏳ Pending
+
+### Sub-Agent Calls
+
+---
+
+## Step 5: Finalize
+- **Status**: ⏳ Pending
+
+### Sub-Agent Calls
+
+---
+
+## Summary
+
+| Step | Duration | Status |
+|------|----------|--------|
+| Step 1 | - | 🔄 |
+| Step 2 | - | ⏳ |
+| Step 3 | - | ⏳ |
+| Step 4 | - | ⏳ |
+| Step 5 | - | ⏳ |
+
+### Sub-Agent Summary
+
+| Agent | Calls | Total Time | Avg Time |
+|-------|-------|------------|----------|
+`)
+
+// 3. 初始化全局 call_id holder（跨步骤共享）
 let exploreCallIdHolder = null
 let librarianCallIdHolder = null
 let oracleCallIdHolder = null
 let multimodalCallIdHolder = null
 let skillsCallIdHolder = null
 let momusCallIdHolder = null
-
-// 初始化当前 session ID（用于子 session 引用）
-const currentSessionId = "current-session"
-
-// 3. 初始化 Sub-Agent 统计
-const subagentStats = {
-  "metis": { calls: 0, totalTime: 0 },
-  "skills": { calls: 0, totalTime: 0 },
-  "explore": { calls: 0, totalTime: 0 },
-  "librarian": { calls: 0, totalTime: 0 },
-  "oracle": { calls: 0, totalTime: 0 },
-  "multimodal-looker": { calls: 0, totalTime: 0 },
-  "momus": { calls: 0, totalTime: 0 }
-}
 
 // 4. ⚠️ 关键：初始化 todo 列表（MANDATORY）
 // 必须在进入 ORCHESTRATION MODE 后立即执行
@@ -464,24 +505,50 @@ todowrite([
   { id: "step-5", content: "Finalize", status: "pending", priority: "medium" }
 ])
 
-// 5. 辅助函数：步骤时间管理
-const startStep = (id) => {
-  stepTimings[id].start = Date.now()
+// 5. 辅助函数：开始步骤
+const startStep = (stepId) => {
+  const timestamp = Date.now()
+  const isoTime = new Date(timestamp).toISOString()
+
+  const currentContent = read(stepsFilePath)
+  const stepPattern = new RegExp(`## Step ${stepId}[^]*?(?=## Step|$)`, 'm')
+  const stepHeader = currentContent.match(stepPattern)?.[0] || `## Step ${stepId}`
+
+  const updatedHeader = stepHeader
+    .replace(/- \*\*Status\*\*:.*$/m, `- **Status**: 🔄 In Progress`)
+    .replace(/- \*\*Started At\*\*:.*$/m, `- **Started At**: ${isoTime}`)
+
+  const newContent = currentContent.replace(stepPattern, updatedHeader)
+  write(stepsFilePath, newContent)
 }
 
-const endStep = (id) => {
-  stepTimings[id].end = Date.now()
-  const duration = ((stepTimings[id].end - stepTimings[id].start) / 1000).toFixed(2)
-  stepTimings[id].duration = duration
-  console.log(`✅ ${id}: ${stepTimings[id].name} (${duration}s)`)
+// 6. 辅助函数：结束步骤
+const endStep = (stepId) => {
+  const endTime = Date.now()
+  const isoTime = new Date(endTime).toISOString()
+
+  const currentContent = read(stepsFilePath)
+  const stepPattern = new RegExp(`## Step ${stepId}[^]*?(?=## Step|$)`, 'm')
+  const stepSection = currentContent.match(stepPattern)?.[0] || ''
+
+  const startTimeMatch = stepSection.match(/- \*\*Started At\*\*: (.+)$/)
+  const startTime = startTimeMatch ? new Date(startTimeMatch[1]).getTime() : null
+  const duration = startTime ? ((endTime - startTime) / 1000).toFixed(2) : 'N/A'
+
+  const updatedSection = stepSection
+    .replace(/- \*\*Status\*\*:.*$/m, `- **Status**: ✅ Completed`)
+    .replace(/\n- \*\*Started At\*\*: (.+)$/m, `\n- **Started At**: $1\n- **Ended At**: ${isoTime}\n- **Duration**: ${duration}s`)
+
+  const newContent = currentContent.replace(stepPattern, updatedSection)
+  write(stepsFilePath, newContent)
 
   // 更新 todo 状态
-  const todoIndex = todos.findIndex(t => t.id === id)
+  const todos = [...]
+  const todoIndex = todos.findIndex(t => t.id === `step-${stepId}`)
   if (todoIndex !== -1) {
     todos[todoIndex].status = "completed"
 
-    // 标记下一步为 in_progress
-    const nextStepId = `step-${parseInt(id.split('-')[1]) + 1}`
+    const nextStepId = `step-${stepId + 1}`
     const nextTodoIndex = todos.findIndex(t => t.id === nextStepId)
     if (nextTodoIndex !== -1) {
       todos[nextTodoIndex].status = "in_progress"
@@ -489,16 +556,46 @@ const endStep = (id) => {
 
     todowrite(todos)
   }
+
+  console.log(`✅ Step ${stepId}: Completed (${duration}s)`)
 }
 
-// 6. 开始第一个步骤
-startStep("step-1")
+// 7. 辅助函数：记录 Sub-Agent 调用
+const recordAgentCall = (agentType, stepId, startTime, endTime, callId, status = 'success', notes = '') => {
+  const duration = ((endTime - startTime) / 1000).toFixed(2)
+  const startIso = new Date(startTime).toISOString()
+  const endIso = new Date(endTime).toISOString()
+
+  const currentContent = read(stepsFilePath)
+  const stepPattern = new RegExp(`## Step ${stepId}[^]*?(?=## Step|$)`, 'm')
+  const stepSection = currentContent.match(stepPattern)?.[0] || ''
+
+  const agentCallEntry = `
+#### ${agentType} #${(stepSection.match(/#### ${agentType}/g) || []).length + 1}
+- **Call ID**: \`${callId}\`
+- **Status**: ${status === 'success' ? '✅ Success' : '⚠️ ' + status}
+- **Started At**: ${startIso}
+- **Ended At**: ${endIso}
+- **Duration**: ${duration}s${notes ? `\n- **Notes**: ${notes}` : ''}
+
+`
+
+  const newStepSection = stepSection.replace(/(### Sub-Agent Calls)/, `$1${agentCallEntry}`)
+  const newContent = currentContent.replace(stepPattern, newStepSection)
+  write(stepsFilePath, newContent)
+
+  console.log(`📊 ${agentType}: ${duration}s (${status})`)
+}
+
+// 8. 开始第一个步骤
+startStep("1")
 ```
 
 **重要提醒**：
 - 如果遗漏了 `todowrite()` 调用，用户将无法看到进度跟踪
-- 如果遗漏了 `startStep("step-1")`，耗时跟踪将不准确
+- 如果遗漏了 `startStep("1")`，耗时跟踪将不准确
 - 这些初始化必须在 PHASE 2 的第一件事执行
+- **所有步骤时间记录到文件而非内存**
 
 ### 超时保护机制
 
@@ -515,39 +612,7 @@ startStep("step-1")
 | Momus | 3 分钟 | 超时后终止，接受当前计划状态 |
 
 **超时处理实现**：
-```typescript
-// 包装 Task 调用以处理超时
-async function callAgentWithTimeout(agentType, taskConfig, timeoutMs, fallbackOutput) {
-  const startTime = Date.now()
-
-  try {
-    const result = await Promise.race([
-      Task(taskConfig),
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("TIMEOUT")), timeoutMs)
-      )
-    ])
-    return { success: true, result }
-  } catch (error) {
-    if (error.message === "TIMEOUT") {
-      const duration = ((Date.now() - startTime) / 1000).toFixed(2)
-      console.log(`⚠️ ${agentType} timed out after ${duration}s, using fallback`)
-      subagentStats[agentType].calls += 1
-      subagentStats[agentType].totalTime += parseFloat(duration)
-      return { success: false, fallback: fallbackOutput }
-    }
-    throw error
-  }
-}
-
-// 使用示例
-const metisResult = await callAgentWithTimeout(
-  "metis",
-  { subagent_type: "metis", ... },
-  120000, // 2 分钟
-  { intent_type: "Build", recommended_agents: [] } // 默认值
-)
-```
+超时处理由 `callAgentWithTimeout` 函数在 STEP 2 中实现，超时时会自动记录到 steps.md。
 
 ### 简化编排流程（5步）
 
@@ -558,52 +623,25 @@ const metisResult = await callAgentWithTimeout(
 - **步骤 4**：用户决策 + Momus 审查（可选）
 - **步骤 5**：Finalize（保存最终计划）
 
-### 耗时跟踪（简化版）
+### 耗时跟踪（文件持久化）
 
-**仅在关键节点输出耗时**：
+**所有耗时记录到文件而非内存**：
 
-```typescript
-// 初始化
-const sessionStartTime = Date.now()
-
-const stepTimings = {
-  "step-1": { name: "初始化 + Metis", start: null, end: null, duration: null },
-  "step-2": { name: "并行 Sub-Agent 执行分析", start: null, end: null, duration: null },
-  "step-3": { name: "生成计划", start: null, end: null, duration: null },
-  "step-4": { name: "用户决策 + Momus 审查", start: null, end: null, duration: null },
-  "step-5": { name: "Finalize", start: null, end: null, duration: null }
-}
-
-// 简化的辅助函数
-const startStep = (id) => {
-  stepTimings[id].start = Date.now()
-}
-
-const endStep = (id) => {
-  stepTimings[id].end = Date.now()
-  const duration = ((stepTimings[id].end - stepTimings[id].start) / 1000).toFixed(2)
-  stepTimings[id].duration = duration
-  console.log(`✅ ${id}: ${stepTimings[id].name} (${duration}s)`)
-}
-
-// Sub-Agent 简化统计（仅记录总时间和调用次数）
-const subagentStats = {
-  "metis": { calls: 0, totalTime: 0 },
-  "skills": { calls: 0, totalTime: 0 },
-  "explore": { calls: 0, totalTime: 0 },
-  "librarian": { calls: 0, totalTime: 0 },
-  "oracle": { calls: 0, totalTime: 0 },
-  "multimodal-looker": { calls: 0, totalTime: 0 },
-  "momus": { calls: 0, totalTime: 0 }
-}
-
-// Todo 列表初始化见 PHASE 2 开始时的完整初始化代码（行 374-381）
-```
+- **Steps 文件**：`.plans/{task-name}/steps.md`
+- **记录内容**：
+  - 每个步骤的开始/结束时间
+  - 每个 Sub-Agent 调用的开始/结束时间
+  - 调用状态（成功/超时/跳过）
+  - Session ID（用于中断回溯）
+- **汇总信息**：
+  - 总耗时
+  - 最慢步骤
+  - Sub-Agent 调用统计
 
 **每个步骤完成时必须执行**：
-1. 调用 `endStep("step-X")` 输出耗时
+1. 调用 `endStep(stepId)` 更新 steps.md
 2. 标记当前 todo 为 completed
-3. 如果有下一个步骤，调用 `startStep("step-Y")` 并标记为 in_progress
+3. 如果有下一个步骤，调用 `startStep(nextStepId)` 并标记为 in_progress
 
 ---
 
@@ -615,24 +653,28 @@ const subagentStats = {
 
 **执行流程**：
 ```typescript
-// 1. 创建任务目录
-mkdir -p ".plans/{task-name}/thinks"
+// 1. 调用 Metis（2分钟超时）
+const metisStartTime = Date.now()
 
-// 2. 调用 Metis（2分钟超时）
 const metisResult = await Task({
   subagent_type: "metis",
   description: "Gap analysis for: {task}",
   prompt: "在编排之前审查此规划请求：\n\n**用户的请求**：{user's initial request}\n\n**面试总结**：{key points from interview}\n\n**当前理解**：{your interpretation}\n\n请提供：\n1. 意图分类\n2. 应该问但没问的问题\n3. 需要设置的 Guardrails\n4. 潜在的范围蔓延区域\n5. 需要验证的假设\n6. 缺失的验收标准\n7. 推荐调用的 Sub-Agent（及原因）\n8. 计划生成的指令"
 })
 
-// 从应答中读取 session_id 存储
+// 2. 从应答中读取 session_id 存储
 const metisCallId = metisResult.task_id || metisResult.session_id || currentSessionId
 const metisOutputPath = `.plans/${taskName}/thinks/metis-${metisCallId}-${Date.now()}.md`
-// 保存 Metis 输出到文件...
 
-// 3. 完成 step-1
-endStep("step-1")
-startStep("step-2")
+// 保存 Metis 输出到文件
+write(metisOutputPath, metisResult.output || JSON.stringify(metisResult))
+
+// 3. 记录到 steps.md
+recordAgentCall("metis", "1", metisStartTime, Date.now(), metisCallId, "success")
+
+// 4. 完成 step-1，开始 step-2
+endStep("1")
+startStep("2")
 ```
 
 **Metis 之后**：
@@ -828,24 +870,13 @@ const needsSkillsAdvisor = metisRecommendations.recommended_agents.includes("ski
 // 根据预定义策略（PHASE 0）确定每个 agent 的 session 模式
 const sessionStrategy = getSessionStrategy(complexity_score)
 
-// 并行调用所有需要的 Sub-Agent（注意：不包括 Momus）
-const calls = []
-
 // 辅助函数：根据 session strategy 决定是否使用 task_id
 const shouldUseSubsession = (agentType) => {
   return sessionStrategy[agentType] === "sub"
 }
 
-// 辅助函数：记录 Sub-Agent 调用时间
-const recordAgentCall = (agentType, startTime, endTime) => {
-  const duration = (endTime - startTime) / 1000
-  subagentStats[agentType].calls += 1
-  subagentStats[agentType].totalTime += duration
-  console.log(`📊 ${agentType}: Call #${subagentStats[agentType].calls} (${duration.toFixed(2)}s)`)
-}
-
 // 辅助函数：带超时的单个调用包装
-async function callAgentWithTimeout(agentType, taskConfig, timeoutMs, fallback) {
+async function callAgentWithTimeout(agentType, taskConfig, timeoutMs, fallback, stepId = "2") {
   const startTime = Date.now()
   let callIdForFallback = null
 
@@ -860,12 +891,12 @@ async function callAgentWithTimeout(agentType, taskConfig, timeoutMs, fallback) 
       )
     ])
 
-    recordAgentCall(agentType, startTime, Date.now())
+    // 记录到 steps.md
+    recordAgentCall(agentType, stepId, startTime, Date.now(), callIdForFallback, "success")
+
     return { success: true, result }
   } catch (error) {
     const duration = ((Date.now() - startTime) / 1000).toFixed(2)
-    subagentStats[agentType].calls += 1
-    subagentStats[agentType].totalTime += parseFloat(duration)
     console.log(`⚠️ ${agentType} timed out after ${duration}s`)
 
     if (fallback) {
@@ -873,14 +904,20 @@ async function callAgentWithTimeout(agentType, taskConfig, timeoutMs, fallback) 
       const fallbackCallId = callIdForFallback || currentSessionId
       write(`.plans/${taskName}/thinks/${agentType}-${fallbackCallId}-${Date.now()}.md`,
             `# ${agentType} Timed Out\n\n**Fallback Output**:\n${JSON.stringify(fallback, null, 2)}`)
+
+      // 记录到 steps.md
+      recordAgentCall(agentType, stepId, startTime, Date.now(), fallbackCallId, "timeout", JSON.stringify(fallback))
+
       return { success: false, fallback }
     }
     throw error
   }
 }
 
+// 并行调用所有需要的 Sub-Agent（注意：不包括 Momus）
+const calls = []
+
 if (needsExplore) {
-  const startTime = Date.now()
   const taskConfig = {
     subagent_type: "explore",
     description: `Codebase exploration for: ${task}`,
@@ -898,15 +935,12 @@ if (needsExplore) {
       write(`.plans/${taskName}/thinks/explore-${exploreCallId}-${Date.now()}.md`, result.output || JSON.stringify(result))
     } else {
       exploreCallIdHolder = `${currentSessionId}-timeout-fallback`
-      write(`.plans/${taskName}/thinks/explore-${exploreCallIdHolder}-${Date.now()}.md`,
-            `# Explore Timed Out\n\n**Fallback Output**:\n${JSON.stringify(fallback, null, 2)}`)
     }
     return { success, result, fallback }
   }))
 }
 
 if (needsLibrarian) {
-  const startTime = Date.now()
   const taskConfig = {
     subagent_type: "librarian",
     description: `Research for: ${task}`,
@@ -920,19 +954,16 @@ if (needsLibrarian) {
   }).then(({ success, result, fallback }) => {
     if (success) {
       const librarianCallId = result.task_id || result.session_id || currentSessionId
-      librarianCallIdHolder = librarianCallId // 保存 call_id 用于后续引用
+      librarianCallIdHolder = librarianCallId
       write(`.plans/${taskName}/thinks/librarian-${librarianCallId}-${Date.now()}.md`, result.output || JSON.stringify(result))
     } else {
       librarianCallIdHolder = `${currentSessionId}-timeout-fallback`
-      write(`.plans/${taskName}/thinks/librarian-${librarianCallIdHolder}-${Date.now()}.md`,
-            `# Librarian Timed Out\n\n**Fallback Output**:\n${JSON.stringify(fallback, null, 2)}`)
     }
     return { success, result, fallback }
   }))
 }
 
 if (needsOracle) {
-  const startTime = Date.now()
   const taskConfig = {
     subagent_type: "oracle",
     description: `Architecture consultation for: ${task}`,
@@ -951,15 +982,12 @@ if (needsOracle) {
       write(`.plans/${taskName}/thinks/oracle-${oracleCallId}-${Date.now()}.md`, result.output || JSON.stringify(result))
     } else {
       oracleCallIdHolder = `${currentSessionId}-timeout-fallback`
-      write(`.plans/${taskName}/thinks/oracle-${oracleCallIdHolder}-${Date.now()}.md`,
-            `# Oracle Timed Out\n\n**Fallback Output**:\n${JSON.stringify(fallback, null, 2)}`)
     }
     return { success, result, fallback }
   }))
 }
 
 if (needsMultimodal) {
-  const startTime = Date.now()
   const taskConfig = {
     subagent_type: "multimodal-looker",
     description: `Media analysis for: ${task}`,
@@ -978,8 +1006,6 @@ if (needsMultimodal) {
       write(`.plans/${taskName}/thinks/multimodal-looker-${multimodalCallId}-${Date.now()}.md`, result.output || JSON.stringify(result))
     } else {
       multimodalCallIdHolder = `${currentSessionId}-timeout-fallback`
-      write(`.plans/${taskName}/thinks/multimodal-looker-${multimodalCallIdHolder}-${Date.now()}.md`,
-            `# Multimodal-Looker Timed Out\n\n**Fallback Output**:\n${JSON.stringify(fallback, null, 2)}`)
     }
     return { success, result, fallback }
   }))
@@ -994,9 +1020,9 @@ try {
   console.log(`⚠️ Step 2 encountered errors: ${error.message}`)
 }
 
-// 完成 step-2
-endStep("step-2")
-startStep("step-3")
+// 完成 step-2，开始 step-3
+endStep("2")
+startStep("3")
 ```
 
 **Session Strategy 实现说明**：
@@ -1018,6 +1044,8 @@ startStep("step-3")
 
 **执行流程**：
 ```typescript
+const step3StartTime = Date.now()
+
 // 辅助函数：获取最新的 Agent 输出文件
 function getLatestAgentOutput(taskName, agentType, callId) {
   const pattern = `.plans/${taskName}/thinks/${agentType}-${callId}-*.md`
@@ -1027,7 +1055,6 @@ function getLatestAgentOutput(taskName, agentType, callId) {
     return null
   }
 
-  // 按文件名排序（包含时间戳），取最新的
   const latestFile = files.sort().pop()
   return read(latestFile)
 }
@@ -1051,12 +1078,15 @@ const plan = synthesizePlan({
 })
 
 // 3. 保存草稿
-const planDraftPath = ".plans/${taskName}/thinks/plan-initial.md"
+const planDraftPath = `.plans/${taskName}/thinks/plan-initial.md`
 write(planDraftPath, plan)
 
-// 4. 完成 step-3
-endStep("step-3")
-startStep("step-4")
+// 4. 记录到 steps.md
+recordAgentCall("plan-synthesis", "3", step3StartTime, Date.now(), "local", "success", "Plan generated and saved")
+
+// 5. 完成 step-3，开始 step-4
+endStep("3")
+startStep("4")
 ```
 
 **计划结构**：见下面的 PLAN TEMPLATE
@@ -1103,11 +1133,11 @@ if (userChoice === "Review with Momus") {
   let planValid = false
   let reviewAttempts = 0
   const maxAttempts = 3 // 最多审查 3 次
-  let planPath = ".plans/${taskName}/thinks/plan-initial.md"
+  let planPath = `.plans/${taskName}/thinks/plan-initial.md`
 
   while (!planValid && reviewAttempts < maxAttempts) {
     reviewAttempts++
-    const startTime = Date.now()
+    const momusStartTime = Date.now()
 
     const momusResult = await Task({
       subagent_type: "momus",
@@ -1119,12 +1149,12 @@ if (userChoice === "Review with Momus") {
 
     // 使用 session_id 作为 call_id 保存输出
     const momusCallId = momusResult.task_id || momusResult.session_id || currentSessionId
-    momusCallIdHolder = momusCallId // 保存到全局变量
+    momusCallIdHolder = momusCallId
     const momusOutputPath = `.plans/${taskName}/thinks/momus-${momusCallId}-${Date.now()}.md`
     write(momusOutputPath, momusResult.output || JSON.stringify(momusResult))
 
-    // 记录 Momus 调用时间
-    recordAgentCall("momus", startTime, Date.now())
+    // 记录到 steps.md
+    recordAgentCall("momus", "4", momusStartTime, Date.now(), momusCallId, "success", `Review attempt ${reviewAttempts}`)
 
     // 解析 Momus 输出
     const reviewStatus = parseMomusOutput(momusResult)
@@ -1154,6 +1184,10 @@ if (userChoice === "Review with Momus") {
   if (!planValid) {
     console.log("⚠️ Momus 审查未通过，但用户选择继续")
   }
+} else {
+  // 记录跳过 Momus 审查
+  const skipStartTime = Date.now()
+  recordAgentCall("momus-review", "4", skipStartTime, Date.now(), "skipped", "skipped", "User chose to skip review")
 }
 
 // 辅助函数：解析 Momus 输出
@@ -1173,9 +1207,9 @@ function parseMomusOutput(momusResult) {
   return { status, blockers }
 }
 
-// 4. 完成 step-4
-endStep("step-4")
-startStep("step-5")
+// 4. 完成 step-4，开始 step-5
+endStep("4")
+startStep("5")
 ```
 
 **Momus 审查策略**：
@@ -1192,15 +1226,16 @@ startStep("step-5")
 
 **执行流程**：
 ```typescript
+const finalizeStartTime = Date.now()
+
 // 1. 生成最终计划（带时间戳）
 const timestamp = new Date().toISOString().replace(/[:.]/g, "").slice(0, 15)
 const finalPlanPath = `.plans/${taskName}/v1.0.0-${timestamp}.md`
 
-// 2. 添加编排元数据到计划
+// 2. 添加编排元数据到计划（从 steps.md 读取汇总）
 plan.metadata = {
   totalTime: ((Date.now() - sessionStartTime) / 1000).toFixed(2) + "s",
-  stepTimings: stepTimings,
-  subagentStats: subagentStats,
+  stepsFilePath: `.plans/${taskName}/steps.md`,
   // 记录所有使用的 session_id，用于中断回溯
   sessionIds: {
     metis: metisCallId,
@@ -1216,40 +1251,97 @@ plan.metadata = {
 // 3. 保存最终计划
 write(finalPlanPath, plan)
 
-// 4. 完成所有步骤
-endStep("step-5")
-
-// 5. 输出耗时汇总
+// 4. 更新 steps.md 的摘要
+const stepsContent = read(stepsFilePath)
 const sessionEndTime = Date.now()
 const totalSessionTime = ((sessionEndTime - sessionStartTime) / 1000).toFixed(2)
 
-// 找出最慢的步骤
-let slowestStep = null
+// 从 steps.md 解析步骤耗时
+const stepMatches = stepsContent.match(/## Step \d+[^]*?- \*\*Duration\*\*: ([\d.]+)s/g) || []
+const stepTimings = []
 let maxStepTime = 0
-Object.entries(stepTimings).forEach(([id, t]) => {
-  if (t.start && t.end && parseFloat(t.duration) > maxStepTime) {
-    maxStepTime = parseFloat(t.duration)
-    slowestStep = id
+let slowestStep = null
+
+stepMatches.forEach((match, index) => {
+  const duration = parseFloat(match.match(/- \*\*Duration\*\*: ([\d.]+)s/)[1])
+  stepTimings.push({ step: index + 1, duration })
+  if (duration > maxStepTime) {
+    maxStepTime = duration
+    slowestStep = index + 1
   }
 })
 
-// 输出汇总
+// 解析 Sub-Agent 统计
+const agentCalls = {}
+const agentTimes = {}
+const agentStatsMatch = stepsContent.match(/#### (metis|skills|explore|librarian|oracle|multimodal-looker|momus)-[^]*?- \*\*Duration\*\*: ([\d.]+)s/g) || []
+
+agentStatsMatch.forEach(match => {
+  const agentMatch = match.match(/#### ([^\s]+) /)
+  const durationMatch = match.match(/- \*\*Duration\*\*: ([\d.]+)s/)
+
+  if (agentMatch && durationMatch) {
+    const agent = agentMatch[1]
+    const duration = parseFloat(durationMatch[1])
+
+    agentCalls[agent] = (agentCalls[agent] || 0) + 1
+    agentTimes[agent] = (agentTimes[agent] || 0) + duration
+  }
+})
+
+// 生成摘要表格
+let summaryTable = `| Step | Duration | Status |\n|------|----------|--------|\n`
+stepTimings.forEach(({ step, duration }) => {
+  const marker = step === slowestStep ? ' 🔥' : ''
+  const status = step === stepTimings.length ? '✅' : '✅'
+  summaryTable += `| ${step} | ${duration}s | ${status}${marker} |\n`
+})
+
+let agentTable = `| Agent | Calls | Total Time | Avg Time |\n|-------|-------|------------|----------|\n`
+Object.entries(agentCalls).forEach(([agent, calls]) => {
+  const totalTime = agentTimes[agent].toFixed(2)
+  const avgTime = (agentTimes[agent] / calls).toFixed(2)
+  agentTable += `| ${agent} | ${calls} | ${totalTime}s | ${avgTime}s |\n`
+})
+
+// 更新 steps.md 的 Summary 部分
+const updatedStepsContent = stepsContent
+  .replace(/## Summary[^]*### Sub-Agent Summary/m, `## Summary
+
+**Total Session Time**: ${totalSessionTime}s (${Math.floor(totalSessionTime / 60)}m ${(totalSessionTime % 60).toFixed(0)}s)
+**Slowest Step**: Step ${slowestStep} (${maxStepTime}s)
+
+${summaryTable}
+
+### Sub-Agent Summary
+
+${agentTable}`)
+
+write(stepsFilePath, updatedStepsContent)
+
+// 5. 记录 finalize
+recordAgentCall("finalize", "5", finalizeStartTime, Date.now(), "local", "success", `Final plan saved to ${finalPlanPath}`)
+
+// 6. 完成 step-5
+endStep("5")
+
+// 7. 输出汇总到控制台
 console.log(`\n=== Orchestration Complete ===`)
 console.log(`Total Session Time: ${totalSessionTime}s (${Math.floor(totalSessionTime / 60)}m ${(totalSessionTime % 60).toFixed(0)}s)`)
 console.log(`\nStep Breakdown:`)
-Object.entries(stepTimings)
-  .filter(([_, t]) => t.start && t.end)
-  .forEach(([id, t]) => {
-    const marker = id === slowestStep ? ' 🔥 SLOWEST' : ''
-    console.log(`  ${id} (${t.name}): ${t.duration}s${marker}`)
-  })
+stepTimings.forEach(({ step, duration }) => {
+  const marker = step === slowestStep ? ' 🔥 SLOWEST' : ''
+  console.log(`  Step ${step}: ${duration}s${marker}`)
+})
 
 console.log(`\nSub-Agent Stats:`)
-Object.entries(subagentStats).forEach(([agent, stats]) => {
-  if (stats.calls > 0) {
-    console.log(`  ${agent}: ${stats.calls} calls, ${stats.totalTime.toFixed(2)}s total`)
-  }
+Object.entries(agentCalls).forEach(([agent, calls]) => {
+  const totalTime = agentTimes[agent].toFixed(2)
+  console.log(`  ${agent}: ${calls} calls, ${totalTime}s total`)
 })
+
+console.log(`\n📄 Steps tracking saved to: ${stepsFilePath}`)
+console.log(`📄 Final plan saved to: ${finalPlanPath}`)
 ```
 
 **最终计划路径**：
@@ -1296,8 +1388,9 @@ Object.entries(subagentStats).forEach(([agent, stats]) => {
 ### Orchestration Timings
 - **Total Session Time**: {XXX.XXs} (XXm XXs)
 - **Slowest Step**: {step-id} ({step-name}) ({X.XX}s)
+- **Detailed Tracking**: See `.plans/{task-name}/steps.md` for complete timing data
 
-**Step Breakdown**:
+**Step Breakdown** (from steps.md):
 | Step | Time (s) | Status |
 |------|----------|--------|
 | step-1: 初始化 + Metis 洞察| {X.XX} | ✓ |
@@ -1305,6 +1398,15 @@ Object.entries(subagentStats).forEach(([agent, stats]) => {
 | step-3: 生成计划 | {X.XX} | ✓ |
 | step-4: 用户决策 + Momus 审查 | {X.XX} | ✓ |
 | step-5: Finalize | {X.XX} | ✓ |
+
+### Sub-Agent Statistics (from steps.md)
+| Agent | Calls | Total Time | Avg Time |
+|-------|-------|------------|----------|
+| metis | {N} | {X.XX}s | {X.XX}s |
+| librarian | {N} | {X.XX}s | {X.XX}s |
+| oracle | {N} | {X.XX}s | {X.XX}s |
+| multimodal-looker | {N} | {X.XX}s | {X.XX}s |
+| momus | {N} | {X.XX}s | {X.XX}s |
 
 ### Session Strategy
 - **Mode**: {current-only | sub-session-only | mixed}
@@ -1326,6 +1428,10 @@ Object.entries(subagentStats).forEach(([agent, stats]) => {
 - **Oracle**: `{oracle_session_id}`
 - **Multimodal-Looker**: `{multimodal_session_id}`
 - **Momus**: `{momus_session_id}`
+- **Steps Tracking**: `.plans/{task-name}/steps.md`
+
+> 如果推理过程被中断，可以通过这些 session_id 回溯到对应的状态，继续执行。
+> 所有步骤和 Sub-Agent 调用的耗时数据已持久化到 `steps.md` 文件。
 
 > 如果推理过程被中断，可以通过这些 session_id 回溯到对应的状态，继续执行。
 
@@ -1692,27 +1798,29 @@ rm .plans/${task-name}/thinks/plan-revised-v*.md  # 如果有审查修订版本
 | Phase | Trigger | Behavior | Storage | Timing |
 |-------|---------|----------|---------|--------|
 | **Interview Mode** | Default state | Consult, clarify requirements | None | N/A |
-| **Orchestration Mode** | Clearance passes OR explicit trigger | Coordinate sub-agents, synthesize plan | `.plans/{task-name}/thinks/` | **Total Session Time tracked** |
-| **Step 1: 初始化 + Metis** | First step of orchestration | Create directory + Intent classification, gap identification | `.plans/{task-name}/thinks/metis-{session_id}-{timestamp}.md` | **step-1** (includes network + API overhead) |
-| **Step 2: 并行 Sub-Agent** | After Metis | Parallel research (Librarian/Oracle/Multimodal-Looker) | `.plans/{task-name}/thinks/{subagent}-{session_id}-{timestamp}-V1.x.x.md` | **step-2** (includes network + API overhead) |
-| **Step 3: 计划综合** | After sub-agent outputs | Create comprehensive plan | `.plans/{task-name}/thinks/plan-initial.md` | **step-3** |
-| **Step 4: 用户决策 + Momus** | After plan synthesis | User confirmation + optional review | `.plans/{task-name}/thinks/momus-{session_id}-{timestamp}.md` | **step-4** (includes network + API overhead) |
-| **Step 5: Finalize** | User confirmation | Save timestamped final plan + session IDs | `v1.0.0-{YYYYmmddHHmm}.md` | **step-5** |
+| **Orchestration Mode** | Clearance passes OR explicit trigger | Coordinate sub-agents, synthesize plan | `.plans/{task-name}/thinks/` + `steps.md` | **Total Session Time tracked** |
+| **Step 1: 初始化 + Metis** | First step of orchestration | Create directory + Intent classification, gap identification | `.plans/{task-name}/thinks/metis-{session_id}-{timestamp}.md` | **step-1** (recorded in steps.md) |
+| **Step 2: 并行 Sub-Agent** | After Metis | Parallel research (Librarian/Oracle/Multimodal-Looker) | `.plans/{task-name}/thinks/{subagent}-{session_id}-{timestamp}-V1.x.x.md` | **step-2** (recorded in steps.md) |
+| **Step 3: 计划综合** | After sub-agent outputs | Create comprehensive plan | `.plans/{task-name}/thinks/plan-initial.md` | **step-3** (recorded in steps.md) |
+| **Step 4: 用户决策 + Momus** | After plan synthesis | User confirmation + optional review | `.plans/{task-name}/thinks/momus-{session_id}-{timestamp}.md` | **step-4** (recorded in steps.md) |
+| **Step 5: Finalize** | User confirmation | Save timestamped final plan + session IDs | `v1.0.0-{YYYYmmddHHmm}.md` + `steps.md` | **step-5** (recorded in steps.md) |
 | **Handoff** | Plan finalized | Present summary, guide to execution | Clean up drafts | N/A |
 
 **Timing Definition**:
 - **Step Time**: End-to-end time from trigger to finish (includes ALL overhead: super-plan processing + Sub-Agent calls + network latency + API overhead + user waiting + system overhead)
+- **Storage**: All timing data persisted to `.plans/{task-name}/steps.md` (not in memory)
 
 ## Key Principles
 
 1. **Session-Based Recovery** - 使用 session_id 作为 call_id，支持中断后的状态回溯和恢复
-2. **Interview First** - 在编排之前理解需求
-2. **Metis Always First** - 在任何其他 Sub-Agent 之前进行意图分类和 gap 检测
-3. **Parallel Sub-Agent Dispatch** - 在需要时并行启动 Librarian/Oracle/Multimodal-Looker（**不包括 Momus**）
-4. **Store All Thoughts** - 每个 Sub-Agent 的输出都保存到 `thinks/` 用于审计追踪
-5. **Momus Review Only After Plan** - Momus 只能在计划生成后调用，用于审查已存在的计划
-6. **Timestamped Plans** - 最终计划包括版本和时间戳
-7. **Orchestrator, Not Worker** - 你协调，Sub-Agent 贡献，实现者执行
+2. **File-Persisted Timing** - 所有步骤和 Sub-Agent 调用耗时记录到 `.plans/{task-name}/steps.md`（不使用内存存储）
+3. **Interview First** - 在编排之前理解需求
+4. **Metis Always First** - 在任何其他 Sub-Agent 之前进行意图分类和 gap 检测
+5. **Parallel Sub-Agent Dispatch** - 在需要时并行启动 Librarian/Oracle/Multimodal-Looker（**不包括 Momus**）
+6. **Store All Thoughts** - 每个 Sub-Agent 的输出都保存到 `thinks/` 用于审计追踪
+7. **Momus Review Only After Plan** - Momus 只能在计划生成后调用，用于审查已存在的计划
+8. **Timestamped Plans** - 最终计划包括版本和时间戳
+9. **Orchestrator, Not Worker** - 你协调，Sub-Agent 贡献，实现者执行
 
 ---
 
@@ -1801,28 +1909,26 @@ calls.push(Task({
 
 ---
 
-### 错误 4：耗时跟踪不完整
+### 错误 4：耗时跟踪未持久化到文件
 
 **错误示例**：
 ```typescript
-// ❌ 错误：没有记录 Sub-Agent 的调用时间
-await Task({ subagent_type: "librarian", ... })
-// 直接继续，没有统计
+// ❌ 错误：使用内存变量存储耗时
+const stepTimings = { ... }
+const subagentStats = { ... }
+// ... 超时不正确，重启后丢失
 ```
 
 **问题**：
-- 无法知道哪些 Sub-Agent 耗时最长
-- 无法优化调用策略
+- 内存存储不持久，会话中断后丢失数据
+- 无法在后续查看历史耗时
+- 无法合并到计划中展示
 
 **正确做法**：
 ```typescript
-// ✅ 正确：记录每个 Sub-Agent 的调用时间
-const startTime = Date.now()
-await Task({ subagent_type: "librarian", ... })
-  .then(result => {
-    recordAgentCall("librarian", startTime, Date.now())
-    return result
-  })
+// ✅ 正确：使用 steps.md 文件持久化存储
+const stepsFilePath = `.plans/${taskName}/steps.md`
+// 所有步骤和 Sub-Agent 调用通过 startStep/endStep/recordAgentCall 记录到文件
 ```
 
 ---
@@ -1832,15 +1938,16 @@ await Task({ subagent_type: "librarian", ... })
 在进入 PHASE 2 之前，检查以下项目：
 
 - [ ] **初始化 todo 列表**：调用 `todowrite()` 创建步骤列表
-- [ ] **初始化耗时跟踪**：设置 `stepTimings` 和 `subagentStats`
-- [ ] **启动第一个步骤**：调用 `startStep("step-1")`
+- [ ] **初始化 steps.md**：创建 `.plans/{task-name}/steps.md` 文件用于持久化耗时跟踪
+- [ ] **启动第一个步骤**：调用 `startStep("1")`（注意使用数字 ID）
 - [ ] **明确 Momus 调用时机**：只在 STEP 4 调用，不在 STEP 2
 - [ ] **实现 Session Strategy**：根据复杂度决定是否使用 task_id
-- [ ] **记录 Sub-Agent 时间**：使用 `recordAgentCall()` 统计每个 Agent 的耗时
+- [ ] **记录 Sub-Agent 时间到文件**：使用 `recordAgentCall()` 统计每个 Agent 的耗时到 steps.md
 - [ ] **Sub-Agent 调用决策**：从 Metis 输出解析 `needsLibrarian/Oracle/Multimodal`
 - [ ] **超时处理**：为每个 Sub-Agent 调用添加超时保护
 - [ ] **文件名一致性**：使用 session_id 作为 call_id（不含时间戳）
 - [ ] **并行文件读取**：使用 `getLatestAgentOutput()` 按时间戳取最新文件
+- [ ] **持久化汇总信息**：在 STEP 5 时更新 steps.md 的 Summary 部分
 
 ---
 
