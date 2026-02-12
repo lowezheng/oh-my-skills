@@ -32,12 +32,11 @@ permission:
 | Sub-Agent | 用途 | 输出存储 | 调用时机 |
 |-----------|------|-----------|----------|
 | **Metis** | 预规划分析、意图分类、gap识别 | `.plans/{task-name}/thinks/metis-{session_id}-{timestamp}.md` | **STEP 1**（必选）|
-| **Skills Advisor** | Skills检索：适合任务和Sub-Agent的skills | `.plans/{task-name}/thinks/skills-{session_id}-{timestamp}.md` | **STEP 2**（在Metis之后，可选）|
-| **Explore** | 代码库快速探索、文件模式查找 | `.plans/{task-name}/thinks/explore-{session_id}-{timestamp}.md` | **STEP 3**（并行）|
-| **Librarian** | 外部研究、文档发现、代码模式 | `.plans/{task-name}/thinks/librarian-{session_id}-{timestamp}.md` | **STEP 3**（并行）|
-| **Oracle** | 高层推理、架构决策、战略权衡 | `.plans/{task-name}/thinks/oracle-{session_id}-{timestamp}.md` | **STEP 3**（并行）|
-| **Multimodal-Looker** | 媒体分析：PDF、图片、图表 | `.plans/{task-name}/thinks/multimodal-looker-{session_id}-{timestamp}.md` | **STEP 3**（并行）|
-| **Momus** | 计划审查：可执行性验证、阻塞检测 | `.plans/{task-name}/thinks/momus-{session_id}-{timestamp}.md` | **STEP 4**（计划生成后）|
+| **Explore** | 代码库快速探索、文件模式查找 | `.plans/{task-name}/thinks/explore-{session_id}-{timestamp}.md` | **STEP 2**（并行）|
+| **Librarian** | 外部研究、文档发现、代码模式 | `.plans/{task-name}/thinks/librarian-{session_id}-{timestamp}.md` | **STEP 2**（并行）|
+| **Oracle** | 高层推理、架构决策、战略权衡 | `.plans/{task-name}/thinks/oracle-{session_id}-{timestamp}.md` | **STEP 2**（并行）|
+| **Multimodal-Looker** | 媒体分析：PDF、图片、图表 | `.plans/{task-name}/thinks/multimodal-looker-{session_id}-{timestamp}.md` | **STEP 2**（并行）|
+| **Momus** | 计划审查：可执行性验证、阻塞检测 | `.plans/{task-name}/thinks/momus-{session_id}-{timestamp}.md` | **STEP 3**（计划生成后）|
 
 **⚠️ Momus 调用约束**：禁止在计划生成前调用 Momus 进行任务分解或创建。
 
@@ -95,6 +94,58 @@ const filename = `.plans/${taskName}/thinks/${subagent_type}-${session_id}-${Dat
 - 新会话时，**可以不传** `task_id` 字段（后端自动生成）
 - 恢复时，**必须传**已保存的 `task_id`
 - session_id 变量值通常以 `ses_` 开头（如 `ses_abc123def456`）
+
+**Session ID 提取逻辑说明**：
+
+从 `Task()` 返回值中提取 session_id：
+```javascript
+const result = await Task({
+  subagent_type: "metis",
+  prompt: "Analyze task..."
+})
+
+// session_id 可能的位置（按优先级检查）
+const session_id = 
+  result.task_id ||        // 优先级1：task_id 字段
+  result.session_id ||     // 优先级2：session_id 字段  
+  result.session?.id ||    // 优先级3：嵌套在 session 对象中
+  null                     // 未找到
+
+if (!session_id) {
+  throw new Error('无法从 Task 返回值中提取 session_id')
+}
+
+// 验证格式（可选，用于调试）
+if (!session_id.startsWith('ses_')) {
+  console.warn(`⚠️ session_id 格式异常: ${session_id}`)
+}
+```
+
+**完整工作流示例**：
+```javascript
+// 1. 调用 Metis
+const metisResult = await Task({
+  subagent_type: "metis",
+  prompt: `Task: ${userRequest}`
+})
+
+// 2. 提取 session_id
+const metisSessionId = metisResult.task_id || metisResult.session_id
+
+// 3. 保存输出到文件
+const metisOutputPath = `.plans/${taskName}/thinks/metis-${metisSessionId}-${Date.now()}.md`
+await write({
+  content: metisResult.output || metisResult.content,
+  filePath: metisOutputPath
+})
+
+// 4. 如果需要恢复会话
+const followUpResult = await Task({
+  subagent_type: "metis",
+  prompt: "Continue analysis...",
+  task_id: metisSessionId  // 传递之前保存的 session_id
+})
+```
 
 ---
 
@@ -193,33 +244,225 @@ question({
 2. 初始化 steps.md：记录每个步骤的开始/结束时间、Sub-Agent 调用
 3. 初始化 todo list：`todowrite([...])`
 
+#### 完整实现工作流模板
+
+```javascript
+// ============ 辅助函数 ============
+function getCurrentTime() {
+  return new Date().toISOString()
+}
+
+function calculateDuration(startTime, endTime) {
+  const start = new Date(startTime).getTime()
+  const end = new Date(endTime).getTime()
+  return Math.round((end - start) / 1000) + 's'
+}
+
+async function initStepsFile(taskName, complexity, sessionStrategy, selectedAgents) {
+  const stepsPath = `.plans/${taskName}/steps.md`
+  const initTime = getCurrentTime()
+  
+  const stepsContent = `# Orchestration Steps
+
+## 任务信息
+- **任务名称**: ${taskName}
+- **复杂度**: ${complexity}
+- **Session 策略**: ${sessionStrategy}
+- **Sub-Agent 选择**: ${selectedAgents.join(' + ')}
+
+## 执行时间线
+
+| Step | Sub-Agent | Session 类型 | 开始时间 | 结束时间 | 耗时 | 状态 |
+|------|-----------|-------------|---------|---------|------|------|
+| 0 | 初始化 | Current | ${initTime} | ${initTime} | ~0s | ✅ 完成 |
+
+## Session IDs 记录
+
+`
+  
+  await write({ content: stepsContent, filePath: stepsPath })
+  return stepsPath
+}
+
+async function appendStep(taskName, stepNumber, subAgentName, sessionType, startTime, endTime, status) {
+  const stepsPath = `.plans/${taskName}/steps.md`
+  const duration = calculateDuration(startTime, endTime)
+  const statusIcon = status === 'completed' ? '✅ 完成' : '❌ 失败'
+  const newLine = `| ${stepNumber} | ${subAgentName} | ${sessionType} | ${startTime} | ${endTime} | ~${duration} | ${statusIcon} |`
+  
+  const existingContent = await read({ filePath: stepsPath })
+  const updatedContent = existingContent.content.replace(
+    /(\n## Session IDs 记录)/,
+    `${newLine}\n$1`
+  )
+  
+  await write({ content: updatedContent, filePath: stepsPath })
+}
+
+async function extractSessionId(result) {
+  const session_id = result.task_id || result.session_id || result.session?.id || null
+  if (!session_id) {
+    throw new Error('无法从 Task 返回值中提取 session_id')
+  }
+  return session_id
+}
+
+async function saveAgentOutput(taskName, agentType, sessionId, content) {
+  const timestamp = Date.now()
+  const filePath = `.plans/${taskName}/thinks/${agentType}-${sessionId}-${timestamp}.md`
+  await write({ content, filePath })
+  return filePath
+}
+
+// ============ 主工作流 ============
+async function orchestrateWorkPlan(taskName, userRequest, complexity, sessionStrategy) {
+  // ============ STEP 0: 初始化 ============
+  const stepStartTime = getCurrentTime()
+  
+  await bash({ command: `mkdir -p ".plans/${taskName}/thinks"`, description: `创建 plans 目录` })
+  
+  const selectedAgents = ['Metis', 'Explore', 'Librarian', 'Oracle', 'Multimodal-Looker']
+  await initStepsFile(taskName, complexity, sessionStrategy, selectedAgents)
+  
+  await todowrite({
+    todos: [
+      { id: '1', content: 'Metis: 意图分类和 gap 分析', status: 'pending', priority: 'high' },
+      { id: '2', content: 'Explore: 代码库探索', status: 'pending', priority: 'high' },
+      { id: '3', content: 'Librarian: 外部研究', status: 'pending', priority: 'medium' },
+      { id: '4', content: 'Oracle: 架构决策', status: 'pending', priority: 'medium' },
+      { id: '5', content: 'Multimodal-Looker: 媒体分析', status: 'pending', priority: 'low' },
+      { id: '6', content: '生成工作计划', status: 'pending', priority: 'high' }
+    ]
+  })
+  
+  await appendStep(taskName, 0, '初始化', 'Current', stepStartTime, getCurrentTime(), 'completed')
+  
+  const sessionIds = {}
+  
+  // ============ STEP 1: Metis ============
+  const metisStart = getCurrentTime()
+  const metisResult = await Task({
+    subagent_type: "metis",
+    prompt: `Task: ${userRequest}\n\nPerform pre-planning analysis and gap identification.`
+  })
+  
+  const metisSessionId = await extractSessionId(metisResult)
+  sessionIds.Metis = metisSessionId
+  await saveAgentOutput(taskName, 'metis', metisSessionId, metisResult.output)
+  await appendStep(taskName, 1, 'Metis', 'Current', metisStart, getCurrentTime(), 'completed')
+  await todowrite({ todos: [{ id: '1', content: 'Metis: 意图分类和 gap 分析', status: 'completed', priority: 'high' }] })
+  
+  // ============ STEP 2: 并行调用 Sub-Agents ============
+  const parallelStart = getCurrentTime()
+  const subAgents = ['explore', 'librarian', 'oracle', 'multimodal-looker']
+  
+  const parallelResults = await Promise.all(
+    subAgents.map(async (agentType) => {
+      const agentStart = getCurrentTime()
+      const result = await Task({
+        subagent_type: agentType,
+        prompt: `Task context: ${metisResult.output}\n\nPerform ${agentType} analysis.`
+      })
+      const sessionId = await extractSessionId(result)
+      await saveAgentOutput(taskName, agentType, sessionId, result.output)
+      sessionIds[agentType.charAt(0).toUpperCase() + agentType.slice(1)] = sessionId
+      return { agentType, sessionId, output: result.output, agentStart }
+    })
+  )
+  
+  for (let i = 0; i < parallelResults.length; i++) {
+    const { agentType, agentStart } = parallelResults[i]
+    await appendStep(taskName, 2 + i, agentType.charAt(0).toUpperCase() + agentType.slice(1), 'Sub', agentStart, getCurrentTime(), 'completed')
+  }
+  
+  await todowrite({
+    todos: [
+      { id: '2', content: 'Explore: 代码库探索', status: 'completed', priority: 'high' },
+      { id: '3', content: 'Librarian: 外部研究', status: 'completed', priority: 'medium' },
+      { id: '4', content: 'Oracle: 架构决策', status: 'completed', priority: 'medium' },
+      { id: '5', content: 'Multimodal-Looker: 媒体分析', status: 'completed', priority: 'low' }
+    ]
+  })
+  
+  // ============ STEP 3: 生成计划 ============
+  const planStart = getCurrentTime()
+  
+  const planContent = generatePlanFromOutputs(taskName, userRequest, metisResult.output, parallelResults)
+  const planTimestamp = new Date().toISOString().replace(/[:.]/g, '').slice(0, 15)
+  const planPath = `.plans/${taskName}/v1.0.0-${planTimestamp}.md`
+  await write({ content: planContent, filePath: planPath })
+  
+  await appendStep(taskName, 6, '计划生成', 'Current', planStart, getCurrentTime(), 'completed')
+  await todowrite({ todos: [{ id: '6', content: '生成工作计划', status: 'completed', priority: 'high' }] })
+  
+  // ============ STEP 4: 更新 Session IDs ============
+  const stepsPath = `.plans/${taskName}/steps.md`
+  const stepsContent = await read({ filePath: stepsPath })
+  const sessionIdsSection = Object.entries(sessionIds)
+    .map(([agent, id]) => `- **${agent}**: ${id}`)
+    .join('\n')
+  
+  const updatedStepsContent = stepsContent.content.replace(
+    /(## Session IDs 记录\n\n)/,
+    `$1${sessionIdsSection}\n\n`
+  )
+  await write({ content: updatedStepsContent, filePath: stepsPath })
+  
+  // ============ STEP 5: Finalize ============
+  const finalizeStart = getCurrentTime()
+  
+  // 计算总耗时并添加汇总
+  const finalStepsContent = await read({ filePath: stepsPath })
+  const totalTimeLine = `\n\n## 总耗时\n${calculateDuration(stepStartTime, getCurrentTime())}`
+  await write({ content: finalStepsContent.content + totalTimeLine, filePath: stepsPath })
+  
+  await appendStep(taskName, 7, 'Finalize', 'Current', finalizeStart, getCurrentTime(), 'completed')
+  
+  return { planPath, sessionIds }
+}
+
+function generatePlanFromOutputs(taskName, userRequest, metisOutput, parallelResults) {
+  // 综合所有 Sub-Agent 输出生成结构化计划
+  return `# Work Plan: ${taskName}
+
+## Meta Information
+- Original Request: ${userRequest}
+- Generated: ${new Date().toISOString()}
+
+## Context
+${metisOutput}
+
+## Sub-Agent Contributions
+${parallelResults.map(r => `### ${r.agentType}\n${r.output}\n`).join('\n')}
+
+[... rest of plan template ...]
+`
+}
+```
+
 ### 步骤流程
 
 **STEP 1: 初始化 + Metis**
 - 调用 Metis 进行意图分类、gap识别
 - 记录输出、更新 todo 状态
 
-**STEP 2: Skills Advisor**
-- Skills检索：适合任务和Sub-Agent的skills
-- 强制Current Session
-
-**STEP 3: 并行 Sub-Agent 调用**
+**STEP 2: 并行 Sub-Agent 调用**
 - 根据 session 策略决定是否使用子 session
+- 根据意图类型，选择合适的子 Agent
 - 并行调用：Explore、Librarian、Oracle、Multimodal-Looker
 - 每个调用使用 `callAgentWithTimeout` 包装（超时保护）
 
-**STEP 4: 生成计划**
+**STEP 3: 生成计划**
 - 综合所有 Sub-Agent 输出
 - 生成结构化计划到 `.plans/{task-name}/v{major}.{minor}.{patch}-{timestamp}.md`
 
-**STEP 5: 用户决策 + Momus 审查**
+**STEP 4: 用户决策 + Momus 审查**
 - 使用 `question` 询问是否需要 Momus 审查
 - 如果需要，调用 Momus 验证计划可执行性
-- 如果 Momus 发现问题，询问用户是否修复
+- 如果 Momus 发现问题，直接修复
 
-**STEP 6: Finalize**
+**STEP 5: Finalize**
 - 清理草稿文件
-- 保存最终计划
 - 更新 steps.md 汇总信息
 
 ### Sub-Agent 调用格式
@@ -249,7 +492,6 @@ await Task({
 | Agent | 超时时间（分钟） |
 |-------|----------------|
 | Metis | 3 |
-| Skills Advisor | 2 |
 | Explore | 3 |
 | Librarian | 5 |
 | Oracle | 5 |
@@ -284,7 +526,6 @@ await Task({
 
 ## Sub-Agent 贡献摘要
 - Metis: 意图分类、gap分析
-- Skills Advisor: Skills推荐
 - Explore/Librarian/Oracle: 并行探索结果
 
 ## Work Objectives
