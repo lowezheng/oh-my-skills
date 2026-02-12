@@ -31,13 +31,13 @@ permission:
 
 | Sub-Agent | 用途 | 输出存储 | 调用时机 |
 |-----------|------|-----------|----------|
-| **Metis** | 预规划分析、意图分类、gap识别 | `.plans/{task-name}/thinks/metis-{call_id}-{timestamp}.md` | **STEP 1**（必选）|
-| **Skills Advisor** | Skills检索：适合任务和Sub-Agent的skills | `.plans/{task-name}/thinks/skills-{call_id}-{timestamp}.md` | **STEP 2**（可选）|
-| **Explore** | 代码库快速探索、文件模式查找 | `.plans/{task-name}/thinks/explore-{call_id}-{timestamp}.md` | **STEP 3**（并行）|
-| **Librarian** | 外部研究、文档发现、代码模式 | `.plans/{task-name}/thinks/librarian-{call_id}-{timestamp}.md` | **STEP 3**（并行）|
-| **Oracle** | 高层推理、架构决策、战略权衡 | `.plans/{task-name}/thinks/oracle-{call_id}-{timestamp}.md` | **STEP 3**（并行）|
-| **Multimodal-Looker** | 媒体分析：PDF、图片、图表 | `.plans/{task-name}/thinks/multimodal-looker-{call_id}-{timestamp}.md` | **STEP 3**（并行）|
-| **Momus** | 计划审查：可执行性验证、阻塞检测 | `.plans/{task-name}/thinks/momus-{call_id}-{timestamp}.md` | **STEP 4**（计划生成后）|
+| **Metis** | 预规划分析、意图分类、gap识别 | `.plans/{task-name}/thinks/metis-{session_id}-{timestamp}.md` | **STEP 1**（必选）|
+| **Skills Advisor** | Skills检索：适合任务和Sub-Agent的skills | `.plans/{task-name}/thinks/skills-{session_id}-{timestamp}.md` | **STEP 2**（在Metis之后，可选）|
+| **Explore** | 代码库快速探索、文件模式查找 | `.plans/{task-name}/thinks/explore-{session_id}-{timestamp}.md` | **STEP 3**（并行）|
+| **Librarian** | 外部研究、文档发现、代码模式 | `.plans/{task-name}/thinks/librarian-{session_id}-{timestamp}.md` | **STEP 3**（并行）|
+| **Oracle** | 高层推理、架构决策、战略权衡 | `.plans/{task-name}/thinks/oracle-{session_id}-{timestamp}.md` | **STEP 3**（并行）|
+| **Multimodal-Looker** | 媒体分析：PDF、图片、图表 | `.plans/{task-name}/thinks/multimodal-looker-{session_id}-{timestamp}.md` | **STEP 3**（并行）|
+| **Momus** | 计划审查：可执行性验证、阻塞检测 | `.plans/{task-name}/thinks/momus-{session_id}-{timestamp}.md` | **STEP 4**（计划生成后）|
 
 **⚠️ Momus 调用约束**：禁止在计划生成前调用 Momus 进行任务分解或创建。
 
@@ -87,14 +87,14 @@ const result = await Task({
 // 从应答中读取 session_id
 const session_id = result.task_id || result.session_id
 
-// 文件名格式：{agent_type}-{call_id}-{timestamp}.md
-const filename = `.plans/${taskName}/thinks/${agent_type}-${session_id}-${Date.now()}.md`
+// 文件名格式：{subagent_type}-{session_id}-{timestamp}.md
+const filename = `.plans/${taskName}/thinks/${subagent_type}-${session_id}-${Date.now()}.md`
 ```
 
 **关键点**：
 - 新会话时，**可以不传** `task_id` 字段（后端自动生成）
 - 恢复时，**必须传**已保存的 `task_id`
-- session_id 通常以 `ses_` 开头（如 `ses_abc123def456`）
+- session_id 变量值通常以 `ses_` 开头（如 `ses_abc123def456`）
 
 ---
 
@@ -116,15 +116,17 @@ complexity_score = num_subtasks * 1.0 + needs_research * 2.5
 | 评分 | 分类 | Session策略 |
 |------|------|-----------|
 | < 3 | Simple | 所有 Sub-Agent 在当前 session |
-| 3-6 | Moderate | Librarian/Oracle 使用子 session |
+| 3 ≤ score < 6 | Moderate | Librarian/Oracle 使用子 session |
 | ≥ 6 | Complex | 除 Metis 外所有使用子 session |
+
+**边界值说明**：评分 6 归入 Complex，评分 <6 归入 Moderate
 
 ### Session策略决策（Moderate/Complex 必须询问）
 
 使用 `question` 工具让用户确认策略：
 
-| 选项 | Simple | Moderate | Complex |
-|------|--------|----------|---------|
+| 选项 | Simple | Moderate (3≤score<6) | Complex (≥6) |
+|------|--------|---------------------|-------------|
 | Accept Recommended | auto | Librarian/Oracle→sub | 除Metis外→sub |
 | Force Current | - | 全部current | 全部current |
 | Custom | - | 手动指定 | 手动指定 |
@@ -243,15 +245,15 @@ await Task({
 
 ### 超时保护
 
-| Agent | 超时时间 |
-|-------|---------|
-| Metis | 2分钟 |
-| Skills Advisor | 2分钟 |
-| Explore | 3分钟 |
-| Librarian | 5分钟 |
-| Oracle | 5分钟 |
-| Multimodal-Looker | 5分钟 |
-| Momus | 3分钟 |
+| Agent | 超时时间（分钟） |
+|-------|----------------|
+| Metis | 2 |
+| Skills Advisor | 2 |
+| Explore | 3 |
+| Librarian | 5 |
+| Oracle | 5 |
+| Multimodal-Looker | 5 |
+| Momus | 3 |
 
 ---
 
