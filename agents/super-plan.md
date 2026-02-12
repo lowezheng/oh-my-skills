@@ -1032,26 +1032,94 @@ async function orchestrateWorkPlan(taskName, userRequest, complexity, sessionStr
   )
   await write({ content: updatedStepsContent, filePath: stepsPath })
   
-  // ============ STEP 5: Finalize ============
+  // ============ STEP 5: Momus 审查（可选） ============
+  let momusSessionId = null
+  let momusDecision = null
+  const momusInteractionStart = getCurrentTime()
+  try {
+    const momusDecisionResult = await question({
+      questions: [{
+        header: "Momus 审查",
+        question: "工作计划已生成完成。是否需要 Momus 进行可执行性审查？",
+        options: [
+          { label: "需要审查", description: "Momus 验证计划的可执行性和完整性" },
+          { label: "跳过审查", description: "计划已经足够详细，无需审查" },
+          { label: "直接执行验证", description: "跳过审查，直接执行验证命令" }
+        ]
+      }]
+    })
+    momusDecision = momusDecisionResult[0]
+    const momusInteractionEnd = getCurrentTime()
+    await recordUserInteraction(taskName, 'Momus 审查决策', momusInteractionStart, momusInteractionEnd, `选择: ${momusDecision}`)
+
+    if (momusDecision === "需要审查") {
+      const momusStart = getCurrentTime()
+      timings.momusStart = momusStart
+
+      // ⚠️ 注意：Momus 必须在当前 session 执行，不使用 Task 工具
+      // Momus 审查应该由当前 Agent 直接完成
+      const momusOutput = `# Momus Review\n\n[进行计划审查...]\n\n计划路径: ${planPath}`
+
+      // 保存 Momus 输出（使用 current-session 作为 session_id）
+      momusSessionId = 'current-session'
+      const momusFilePath = await saveAgentOutput(taskName, 'momus', momusSessionId, momusOutput)
+      await appendStep(taskName, 7, 'Momus 审查', 'Current', momusStart, getCurrentTime(), 'completed', momusFilePath)
+      timings.momusEnd = getCurrentTime()
+    } else if (momusDecision === "直接执行验证") {
+      await appendStep(taskName, 7, 'Momus 审查', 'Current', getCurrentTime(), getCurrentTime(), 'skipped')
+    } else {
+      await appendStep(taskName, 7, 'Momus 审查', 'Current', getCurrentTime(), getCurrentTime(), 'skipped')
+    }
+  } catch (e) {
+    // 用户跳过或出错
+    await appendStep(taskName, 7, 'Momus 审查', 'Current', getCurrentTime(), getCurrentTime(), 'skipped')
+  }
+  
+  // ============ STEP 6: 用户决策（是否执行验证） ============
+  const userDecisionStart = getCurrentTime()
+  timings.userDecisionStart = userDecisionStart
+  try {
+    const userDecisionResult = await question({
+      questions: [{
+        header: "执行验证",
+        question: `Momus 审查${momusDecision === "需要审查" ? "完成" : "跳过"}。是否立即执行验证命令？`,
+        options: [
+          { label: "立即执行", description: "执行验证命令（推荐）" },
+          { label: "跳过执行", description: "计划已完成，无需执行验证" }
+        ]
+      }]
+    })
+    const userDecision = userDecisionResult[0]
+    const userDecisionEnd = getCurrentTime()
+    timings.userDecisionEnd = userDecisionEnd
+    await recordUserInteraction(taskName, '执行验证决策', userDecisionStart, userDecisionEnd, `选择: ${userDecision}`)
+    await appendStep(taskName, 8, '用户决策', 'Current', userDecisionStart, userDecisionEnd, 'completed')
+  } catch (e) {
+    // 用户跳过或出错
+    timings.userDecisionEnd = getCurrentTime()
+    await appendStep(taskName, 8, '用户决策', 'Current', userDecisionStart, timings.userDecisionEnd, 'skipped')
+  }
+  
+  // ============ STEP 7: Finalize ============
   const finalizeStart = getCurrentTime()
   
-  // 计算总耗时并添加详细分解
-  const finalStepsContent = await read({ filePath: stepsPath })
-  
+  // 计算各阶段耗时（先计算，但总耗时在最后计算）
   const initDuration = calculateDuration(timings.initStart, timings.initEnd)
   const metisDuration = calculateDuration(timings.metisStart, timings.metisEnd)
   const parallelDuration = parallelResults.length > 0 ? calculateDuration(timings.parallelStart, timings.parallelEnd) : '0s'
   const planDuration = calculateDuration(timings.planStart, timings.planEnd)
-  const totalDuration = calculateDuration(stepStartTime, finalizeStart)
-  const totalSessionDuration = calculateDuration(userInteractionStart, finalizeStart)
-  const totalMs = calculateDurationMs(stepStartTime, finalizeStart)
   const initMs = calculateDurationMs(timings.initStart, timings.initEnd)
   const metisMs = calculateDurationMs(timings.metisStart, timings.metisEnd)
   const parallelMs = parallelResults.length > 0 ? calculateDurationMs(timings.parallelStart, timings.parallelEnd) : 0
   const planMs = calculateDurationMs(timings.planStart, timings.planEnd)
+
+  // 计算顺序执行的总时间（用于并行效率分析）
+  const seqTotalMs = parallelResults.length > 0
+    ? parallelResults.reduce((sum, r) => sum + calculateDurationMs(r.agentStart, r.agentEnd), 0)
+    : 0
   
   // 计算文件系统时间与调用时间的差异
-  let fileSystemSyncNotes = `
+  const fileSystemSyncNotes = `
 ## 时间戳同步说明
 
 **实际执行时间 vs 文件记录时间**：
@@ -1066,7 +1134,16 @@ async function orchestrateWorkPlan(taskName, userRequest, complexity, sessionStr
 
 **文件时间**列用于验证记录的准确性。如果文件时间与调用时间差异过大（> 10s），可能存在时间同步问题。
 `
-
+  
+  // 读取 steps.md 并准备更新内容
+  const finalStepsContent = await read({ filePath: stepsPath })
+  
+  // 在所有操作完成后，再计算总耗时（使用当前时间作为最终结束时间）
+  const finalizeEnd = getCurrentTime()
+  const totalDuration = calculateDuration(stepStartTime, finalizeEnd)
+  const totalSessionDuration = calculateDuration(userInteractionStart, finalizeEnd)
+  const totalMs = calculateDurationMs(stepStartTime, finalizeEnd)
+  
   const totalTimeSection = `
 ## 总耗时
 
@@ -1079,22 +1156,30 @@ async function orchestrateWorkPlan(taskName, userRequest, complexity, sessionStr
 |------|------|------|------|
 | 初始化 | ${initDuration} | ${totalMs > 0 ? Math.round((initMs / totalMs) * 100) : 0}% | 创建目录、初始化文件 |
 | Metis 分析 | ${metisDuration} | ${totalMs > 0 ? Math.round((metisMs / totalMs) * 100) : 0}% | 意图分类和 gap 识别 |
-| 用户交互 | ${calculateDuration(interactionStart, interactionEnd)} | - | Sub-Agent 选择决策等待时间 |
+| Sub-Agent 选择 | ${calculateDuration(interactionStart, interactionEnd)} | - | 用户决策等待时间 |
 | Sub-Agent 调用 | ${parallelDuration} | ${totalMs > 0 ? Math.round((parallelMs / totalMs) * 100) : 0}% | 并行调用 ${subAgentsToCall.length || 0} 个 Sub-Agent（${subAgentSelection.mode || 'none'}） |
 | 计划生成 | ${planDuration} | ${totalMs > 0 ? Math.round((planMs / totalMs) * 100) : 0}% | 综合输出生成工作计划 |
+| Momus 审查 | ${timings.momusEnd ? calculateDuration(timings.momusStart, timings.momusEnd) : '0s'} | - | 计划可执行性验证 |
+| 用户决策 | ${timings.userDecisionEnd ? calculateDuration(timings.userDecisionStart, timings.userDecisionEnd) : '0s'} | - | 执行验证命令决策 |
+| Finalize | ${calculateDuration(finalizeStart, finalizeEnd)} | - | 清理和汇总 |
 
 ${fileSystemSyncNotes}
 
 **说明**：
-- 总耗时包括所有阶段的时间，不包括用户交互等待时间
-- 并行执行效率：相比顺序执行，节省约 ${parallelMs > 0 && subAgentsToCall.length > 0 ? Math.round((1 - parallelMs / (subAgentsToCall.length * parallelMs)) * 100) : 0}% 时间
+- 总耗时包括所有阶段的时间，包括用户交互等待时间
+- Agent 会话时间：从第一个 Agent 开始到最后一个 Agent 完成
+- 文件记录时间：从目录创建到计划文件写入完成
+- 并行执行效率：相比顺序执行，节省约 ${parallelMs > 0 && seqTotalMs > 0 ? Math.round((1 - parallelMs / seqTotalMs) * 100) : 0}% 时间
+  - 顺序执行总时间：${seqTotalMs > 0 ? Math.round(seqTotalMs / 1000) + 's' : '0s'}
+  - 并行执行时间：${parallelMs > 0 ? Math.round(parallelMs / 1000) + 's' : '0s'}
+  - 节省时间：${seqTotalMs > 0 && parallelMs > 0 ? Math.round((seqTotalMs - parallelMs) / 1000) + 's' : '0s'}
 - 如果文件时间与调用时间差异过大（> 10s），请检查系统时钟或网络连接
 `
   
   await write({ content: finalStepsContent.content + totalTimeSection, filePath: stepsPath })
   
-  const stepNumber = subAgentsToCall.length > 0 ? 3 + subAgentsToCall.length : 3
-  await appendStep(taskName, stepNumber, 'Finalize', 'Current', finalizeStart, getCurrentTime(), 'completed', stepsPath)
+  const stepNumber = 9  // 0(初始化) + 1(Metis) + 1.5(Sub-Agent 选择) + 4(并行调用) + 1(计划生成) + 1(Momus) + 1(用户决策)
+  await appendStep(taskName, stepNumber, 'Finalize', 'Current', finalizeStart, finalizeEnd, 'completed', stepsPath)
   
   return { planPath, sessionIds, subAgentSelection }
 }
