@@ -895,30 +895,64 @@ const endStep = (stepId) => {
 }
 
 // 7. 辅助函数：记录 Sub-Agent 调用
-const recordAgentCall = (agentType, stepId, startTime, endTime, callId, status = 'success', notes = '') => {
-  const duration = ((endTime - startTime) / 1000).toFixed(2)
+// ⚠️ 重要：duration 应该包含 Sub-Agent 的实际执行时间，而不仅仅是 Task 工具调用时间
+// Task 工具是异步的，调用时间 ≠ Sub-Agent 执行时间
+// - Task Call Overhead: 调用 Task 工具到返回的时间（通常 < 2s）
+// - Sub-Agent Execution Time: Sub-Agent 实际执行完成的时间（可能数分钟）
+const recordAgentCall = (agentType, stepId, startTime, endTime, callId, status = 'success', notes = '', subAgentExecutionTimeMs = null) => {
+  // 如果提供了 subAgentExecutionTimeMs，使用它作为 duration
+  // 否则使用 endTime - startTime 作为 fallback（但这只是 Task Call Overhead）
+  const durationMs = subAgentExecutionTimeMs !== null ? subAgentExecutionTimeMs : (endTime - startTime)
+  const duration = (durationMs / 1000).toFixed(2)
+  
+  // 格式化 duration 为可读格式
+  const durationFormatted = formatDuration(durationMs)
+  
   const startIso = new Date(startTime).toISOString()
   const endIso = new Date(endTime).toISOString()
-
+  
   const currentContent = read(stepsFilePath)
   const stepPattern = new RegExp(`## Step ${stepId}[^]*?(?=## Step|$)`, 'm')
   const stepSection = currentContent.match(stepPattern)?.[0] || ''
-
+  
+  // 计算实际执行时间（如果提供了）
+  let durationNote = ''
+  if (subAgentExecutionTimeMs !== null) {
+    const taskCallOverheadMs = endTime - startTime
+    if (taskCallOverheadMs < subAgentExecutionTimeMs) {
+      durationNote = `\n- **Task Call Overhead**: ${(taskCallOverheadMs / 1000).toFixed(2)}s`
+      durationNote += `\n- **Sub-Agent Execution Time**: ${(subAgentExecutionTimeMs / 1000).toFixed(2)}s`
+    }
+  }
+  
   const agentCallEntry = `
 #### ${agentType} #${(stepSection.match(/#### ${agentType}/g) || []).length + 1}
 - **Call ID**: \`${callId}\`
 - **Status**: ${status === 'success' ? '✅ Success' : '⚠️ ' + status}
 - **Started At**: ${startIso}
 - **Ended At**: ${endIso}
-- **Duration**: ${duration}s${notes ? `\n- **Notes**: ${notes}` : ''}
+- **Duration**: ${duration}s (${durationFormatted})${durationNote}${notes ? `\n- **Notes**: ${notes}` : ''}
 
 `
-
+  
   const newStepSection = stepSection.replace(/(### Sub-Agent Calls)/, `$1${agentCallEntry}`)
   const newContent = currentContent.replace(stepPattern, newStepSection)
   write(stepsFilePath, newContent)
+  
+  console.log(`📊 ${agentType}: ${duration}s (${durationFormatted}) (${status})`)
+}
 
-  console.log(`📊 ${agentType}: ${duration}s (${status})`)
+// 辅助函数：格式化毫秒数为可读格式
+const formatDuration = (ms) => {
+  const seconds = Math.floor(ms / 1000)
+  const minutes = Math.floor(seconds / 60)
+  const remainingSeconds = seconds % 60
+  
+  if (minutes > 0) {
+    return `${minutes}m ${remainingSeconds}s`
+  } else {
+    return `${seconds}s`
+  }
 }
 
 // 8. 开始第一个步骤
@@ -996,6 +1030,9 @@ const metisResult = await Task({
   prompt: "在编排之前审查此规划请求：\n\n**用户的请求**：{user's initial request}\n\n**面试总结**：{key points from interview}\n\n**当前理解**：{your interpretation}\n\n请提供：\n1. 意图分类\n2. 应该问但没问的问题\n3. 需要设置的 Guardrails\n4. 潜在的范围蔓延区域\n5. 需要验证的假设\n6. 缺失的验收标准\n7. 推荐调用的 Sub-Agent（及原因）\n8. 计划生成的指令"
 })
 
+const metisCallEndTime = Date.now()
+const metisTaskCallOverheadMs = metisCallEndTime - metisStartTime
+
 // 2. 从应答中读取 session_id 存储
 const metisCallId = metisResult.task_id || metisResult.session_id || currentSessionId
 const metisOutputPath = `.plans/${taskName}/thinks/metis-${metisCallId}-${Date.now()}.md`
@@ -1004,7 +1041,13 @@ const metisOutputPath = `.plans/${taskName}/thinks/metis-${metisCallId}-${Date.n
 write(metisOutputPath, metisResult.output || JSON.stringify(metisResult))
 
 // 3. 记录到 steps.md
-recordAgentCall("metis", "1", metisStartTime, Date.now(), metisCallId, "success")
+recordAgentCall("metis", "1", metisStartTime, metisCallEndTime, metisCallId, "success")
+
+// 提取 Sub-Agent 实际执行时间并更新 steps.md
+const metisSubAgentExecutionTimeMs = extractSubAgentExecutionTime(metisResult.output)
+if (metisSubAgentExecutionTimeMs !== null) {
+  updateAgentCallDuration("metis", "1", metisCallId, metisTaskCallOverheadMs, metisSubAgentExecutionTimeMs)
+}
 
 // 4. 完成 step-1，开始 step-2
 endStep("1")
@@ -1202,6 +1245,12 @@ if (needsSkillsAdvisor) {
     skillsCallIdHolder = skillsCallId
     write(`.plans/${taskName}/thinks/skills-${skillsCallId}-${Date.now()}.md`,
           skillsResult.result.output || JSON.stringify(skillsResult.result))
+
+    // 提取 Sub-Agent 实际执行时间并更新 steps.md
+    const subAgentExecutionTimeMs = extractSubAgentExecutionTime(skillsResult.result.output)
+    if (subAgentExecutionTimeMs !== null) {
+      updateAgentCallDuration("skills", "1", skillsCallId, skillsResult.taskCallOverheadMs, subAgentExecutionTimeMs)
+    }
   } else {
     skillsCallIdHolder = `${currentSessionId}-timeout-fallback`
     write(`.plans/${taskName}/thinks/skills-${skillsCallIdHolder}-${Date.now()}.md`,
@@ -1302,6 +1351,10 @@ const shouldUseSubsession = (agentType) => {
 }
 
 // 辅助函数：带超时的单个调用包装
+// ⚠️ 重要：Task 工具是异步的，Task 调用返回的时间 ≠ Sub-Agent 实际执行时间
+// - Task 工具立即返回（包含 task_id），耗时通常 < 2s
+// - Sub-Agent 在后台继续执行，可能耗时数分钟
+// - 因此，我们需要从 Sub-Agent 输出中提取执行时间
 async function callAgentWithTimeout(agentType, taskConfig, timeoutMs, fallback, stepId = "2") {
   const startTime = Date.now()
   let callIdForFallback = null
@@ -1317,10 +1370,15 @@ async function callAgentWithTimeout(agentType, taskConfig, timeoutMs, fallback, 
       )
     ])
 
-    // 记录到 steps.md
-    recordAgentCall(agentType, stepId, startTime, Date.now(), callIdForFallback, "success")
+    const taskCallEndTime = Date.now()
+    const taskCallOverheadMs = taskCallEndTime - startTime
 
-    return { success: true, result }
+    // 记录到 steps.md
+    // ⚠️ 注意：这里先使用 taskCallOverhead 作为 fallback
+    // 如果 Sub-Agent 输出中包含执行时间，后续会更新记录
+    recordAgentCall(agentType, stepId, startTime, taskCallEndTime, callIdForFallback, "success")
+
+    return { success: true, result, taskCallOverheadMs }
   } catch (error) {
     const duration = ((Date.now() - startTime) / 1000).toFixed(2)
     console.log(`⚠️ ${agentType} timed out after ${duration}s`)
@@ -1331,13 +1389,136 @@ async function callAgentWithTimeout(agentType, taskConfig, timeoutMs, fallback, 
       write(`.plans/${taskName}/thinks/${agentType}-${fallbackCallId}-${Date.now()}.md`,
             `# ${agentType} Timed Out\n\n**Fallback Output**:\n${JSON.stringify(fallback, null, 2)}`)
 
-      // 记录到 steps.md
-      recordAgentCall(agentType, stepId, startTime, Date.now(), fallbackCallId, "timeout", JSON.stringify(fallback))
+      // 记录到 steps.md（使用超时时间作为执行时间）
+      const timeoutMs = Date.now() - startTime
+      recordAgentCall(agentType, stepId, startTime, Date.now(), fallbackCallId, "timeout", JSON.stringify(fallback), timeoutMs)
 
       return { success: false, fallback }
     }
     throw error
   }
+}
+
+// 辅助函数：从 Sub-Agent 输出中提取执行时间
+// Sub-Agent 可能在其输出中包含类似 "Started At: ..." 和 "Ended At: ..." 的时间戳
+// 或者包含类似 "Duration: ..." 的执行时间
+function extractSubAgentExecutionTime(output) {
+  if (!output || typeof output !== 'string') {
+    return null
+  }
+
+  // 尝试匹配 "Started At:" 和 "Ended At:" 格式
+  const startedAtMatch = output.match(/Started At:\s*([^\n]+)/i)
+  const endedAtMatch = output.match(/Ended At:\s*([^\n]+)/i)
+
+  if (startedAtMatch && endedAtMatch) {
+    try {
+      const startedAt = new Date(startedAtMatch[1]).getTime()
+      const endedAt = new Date(endedAtMatch[1]).getTime()
+      const executionTimeMs = endedAt - startedAt
+      if (executionTimeMs > 0 && executionTimeMs < 3600000) { // 合理范围：0-60分钟
+        return executionTimeMs
+      }
+    } catch (e) {
+      // 忽略日期解析错误
+    }
+  }
+
+  // 尝试匹配 "Duration:" 格式
+  const durationMatch = output.match(/Duration:\s*([\d.]+)\s*(m|min|s|sec)/i)
+  if (durationMatch) {
+    const value = parseFloat(durationMatch[1])
+    const unit = durationMatch[2].toLowerCase()
+    if (unit.startsWith('m')) {
+      return value * 60000 // 分钟 → 毫秒
+    } else {
+      return value * 1000 // 秒 → 毫秒
+    }
+  }
+
+  return null
+}
+
+// 辅助函数：更新 steps.md 中的 Sub-Agent 调用记录
+// 将 duration 从 Task Call Overhead 更新为 Sub-Agent 实际执行时间
+function updateAgentCallDuration(agentType, stepId, callId, taskCallOverheadMs, subAgentExecutionTimeMs) {
+  const currentContent = read(stepsFilePath)
+  const stepPattern = new RegExp(`## Step ${stepId}[^]*?(?=## Step|$)`, 'm')
+  const stepSection = currentContent.match(stepPattern)?.[0] || ''
+
+  // 查找对应的 agent 调用记录
+  const agentPattern = new RegExp(
+    `#### ${agentType} #\\d+[^]*?- \\*\\*Call ID\\*\\*: \`${callId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\`[^]*?- \\*\\*Notes\\*\\*:`,
+    'm'
+  )
+  const agentSection = stepSection.match(agentPattern)?.[0]
+
+  if (!agentSection) {
+    console.log(`⚠️ Agent call not found for ${agentType} with call_id ${callId}`)
+    return
+  }
+
+  // 更新 Duration 行
+  const durationMs = subAgentExecutionTimeMs
+  const duration = (durationMs / 1000).toFixed(2)
+  const durationFormatted = formatDuration(durationMs)
+
+  let updatedAgentSection = agentSection.replace(
+    /- \*\*Duration\*\*: [\d.]+s/,
+    `- **Duration**: ${duration}s (${durationFormatted})`
+  )
+
+  // 添加 Task Call Overhead 和 Sub-Agent Execution Time 说明
+  const overheadNote = `\n- **Task Call Overhead**: ${(taskCallOverheadMs / 1000).toFixed(2)}s\n- **Sub-Agent Execution Time**: ${(subAgentExecutionTimeMs / 1000).toFixed(2)}s`
+  updatedAgentSection = updatedAgentSection.replace(
+    /(- \*\*Duration\*\*: [^\n]+\n)/,
+    `$1${overheadNote}\n`
+  )
+
+  // 替换整个 agent section
+  const newStepSection = stepSection.replace(agentPattern, updatedAgentSection)
+  const newContent = currentContent.replace(stepPattern, newStepSection)
+  write(stepsFilePath, newContent)
+
+  console.log(`📊 Updated ${agentType} duration: ${duration}s (${durationFormatted})`)
+}
+// Sub-Agent 可能在其输出中包含类似 "Started At: ..." 和 "Ended At: ..." 的时间戳
+// 或者包含类似 "Duration: ..." 的执行时间
+function extractSubAgentExecutionTime(output) {
+  if (!output || typeof output !== 'string') {
+    return null
+  }
+
+  // 尝试匹配 "Started At:" 和 "Ended At:" 格式
+  const startedAtMatch = output.match(/Started At:\s*([^\n]+)/i)
+  const endedAtMatch = output.match(/Ended At:\s*([^\n]+)/i)
+
+  if (startedAtMatch && endedAtMatch) {
+    try {
+      const startedAt = new Date(startedAtMatch[1]).getTime()
+      const endedAt = new Date(endedAtMatch[1]).getTime()
+      const executionTimeMs = endedAt - startedAt
+      if (executionTimeMs > 0 && executionTimeMs < 3600000) { // 合理范围：0-60分钟
+        return executionTimeMs
+      }
+    } catch (e) {
+      // 忽略日期解析错误
+    }
+  }
+
+  // 尝试匹配 "Duration:" 格式
+  const durationMatch = output.match(/Duration:\s*([\d.]+)\s*(m|min|s|sec)/i)
+  if (durationMatch) {
+    const value = parseFloat(durationMatch[1])
+    const unit = durationMatch[2].toLowerCase()
+    if (unit.startsWith('m')) {
+      return value * 60000 // 分钟 → 毫秒
+    } else {
+      return value * 1000 // 秒 → 毫秒
+    }
+  }
+
+  return null
 }
 
 // 并行调用所有需要的 Sub-Agent（注意：不包括 Momus）
@@ -1354,15 +1535,22 @@ if (needsExplore) {
   calls.push(callAgentWithTimeout("explore", taskConfig, 180000, {
     recommended_agents: ["explore"],
     notes: "Partial code exploration due to timeout"
-  }).then(({ success, result, fallback }) => {
+  }).then(({ success, result, fallback, taskCallOverheadMs }) => {
     if (success) {
       const exploreCallId = result.task_id || result.session_id || currentSessionId
       exploreCallIdHolder = exploreCallId
       write(`.plans/${taskName}/thinks/explore-${exploreCallId}-${Date.now()}.md`, result.output || JSON.stringify(result))
+
+      // 提取 Sub-Agent 实际执行时间并更新 steps.md
+      const subAgentExecutionTimeMs = extractSubAgentExecutionTime(result.output)
+      if (subAgentExecutionTimeMs !== null) {
+        // 更新 steps.md 中的 duration 为 Sub-Agent 实际执行时间
+        updateAgentCallDuration("explore", "2", exploreCallId, taskCallOverheadMs, subAgentExecutionTimeMs)
+      }
     } else {
       exploreCallIdHolder = `${currentSessionId}-timeout-fallback`
     }
-    return { success, result, fallback }
+    return { success, result, fallback, taskCallOverheadMs }
   }))
 }
 
@@ -1377,15 +1565,21 @@ if (needsLibrarian) {
   calls.push(callAgentWithTimeout("librarian", taskConfig, 300000, {
     recommended_agents: ["librarian"],
     notes: "Partial research due to timeout"
-  }).then(({ success, result, fallback }) => {
+  }).then(({ success, result, fallback, taskCallOverheadMs }) => {
     if (success) {
       const librarianCallId = result.task_id || result.session_id || currentSessionId
       librarianCallIdHolder = librarianCallId
       write(`.plans/${taskName}/thinks/librarian-${librarianCallId}-${Date.now()}.md`, result.output || JSON.stringify(result))
+
+      // 提取 Sub-Agent 实际执行时间并更新 steps.md
+      const subAgentExecutionTimeMs = extractSubAgentExecutionTime(result.output)
+      if (subAgentExecutionTimeMs !== null) {
+        updateAgentCallDuration("librarian", "2", librarianCallId, taskCallOverheadMs, subAgentExecutionTimeMs)
+      }
     } else {
       librarianCallIdHolder = `${currentSessionId}-timeout-fallback`
     }
-    return { success, result, fallback }
+    return { success, result, fallback, taskCallOverheadMs }
   }))
 }
 
@@ -1401,15 +1595,21 @@ if (needsOracle) {
     recommended_agents: ["oracle"],
     notes: "Partial architecture analysis due to timeout",
     fallback_reason: "timeout"
-  }).then(({ success, result, fallback }) => {
+  }).then(({ success, result, fallback, taskCallOverheadMs }) => {
     if (success) {
       const oracleCallId = result.task_id || result.session_id || currentSessionId
       oracleCallIdHolder = oracleCallId
       write(`.plans/${taskName}/thinks/oracle-${oracleCallId}-${Date.now()}.md`, result.output || JSON.stringify(result))
+
+      // 提取 Sub-Agent 实际执行时间并更新 steps.md
+      const subAgentExecutionTimeMs = extractSubAgentExecutionTime(result.output)
+      if (subAgentExecutionTimeMs !== null) {
+        updateAgentCallDuration("oracle", "2", oracleCallId, taskCallOverheadMs, subAgentExecutionTimeMs)
+      }
     } else {
       oracleCallIdHolder = `${currentSessionId}-timeout-fallback`
     }
-    return { success, result, fallback }
+    return { success, result, fallback, taskCallOverheadMs }
   }))
 }
 
@@ -1425,15 +1625,21 @@ if (needsMultimodal) {
     recommended_agents: ["multimodal-looker"],
     notes: "Media analysis failed due to timeout",
     fallback_reason: "timeout"
-  }).then(({ success, result, fallback }) => {
+  }).then(({ success, result, fallback, taskCallOverheadMs }) => {
     if (success) {
       const multimodalCallId = result.task_id || result.session_id || currentSessionId
       multimodalCallIdHolder = multimodalCallId
       write(`.plans/${taskName}/thinks/multimodal-looker-${multimodalCallId}-${Date.now()}.md`, result.output || JSON.stringify(result))
+
+      // 提取 Sub-Agent 实际执行时间并更新 steps.md
+      const subAgentExecutionTimeMs = extractSubAgentExecutionTime(result.output)
+      if (subAgentExecutionTimeMs !== null) {
+        updateAgentCallDuration("multimodal-looker", "2", multimodalCallId, taskCallOverheadMs, subAgentExecutionTimeMs)
+      }
     } else {
       multimodalCallIdHolder = `${currentSessionId}-timeout-fallback`
     }
-    return { success, result, fallback }
+    return { success, result, fallback, taskCallOverheadMs }
   }))
 }
 
@@ -1574,6 +1780,9 @@ if (reviewChoice[0] === "Review with Momus") {
       timeout: 180000 // 3 分钟超时
     })
 
+    const momusCallEndTime = Date.now()
+    const momusTaskCallOverheadMs = momusCallEndTime - momusStartTime
+
     // 使用 session_id 作为 call_id 保存输出
     const momusCallId = momusResult.task_id || momusResult.session_id || currentSessionId
     momusCallIdHolder = momusCallId
@@ -1581,7 +1790,13 @@ if (reviewChoice[0] === "Review with Momus") {
     write(momusOutputPath, momusResult.output || JSON.stringify(momusResult))
 
     // 记录到 steps.md
-    recordAgentCall("momus", "4", momusStartTime, Date.now(), momusCallId, "success", `Review attempt ${reviewAttempts}`)
+    recordAgentCall("momus", "4", momusStartTime, momusCallEndTime, momusCallId, "success", `Review attempt ${reviewAttempts}`)
+
+    // 提取 Sub-Agent 实际执行时间并更新 steps.md
+    const subAgentExecutionTimeMs = extractSubAgentExecutionTime(momusResult.output)
+    if (subAgentExecutionTimeMs !== null) {
+      updateAgentCallDuration("momus", "4", momusCallId, momusTaskCallOverheadMs, subAgentExecutionTimeMs)
+    }
 
     // 解析 Momus 输出
     const reviewStatus = parseMomusOutput(momusResult)
