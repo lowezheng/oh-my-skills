@@ -45,8 +45,8 @@ permission:
 | 复杂度分类 | Explore | Librarian | Oracle | Multimodal-Looker | 触发条件 |
 |-----------|---------|-----------|--------|-------------------|---------|
 | **简单任务** (score < 3) | ⚠️ 条件触发 | ⚠️ 条件触发 | ❌ 不触发 | ⚠️ 意图触发 | Explore 信息不足时触发 Librarian |
-| **中等任务** (3 ≤ score < 6) | ✅ 必需 | ⚠️ 条件触发 | ⚠️ 可选 | ⚠️ 意图触发 | Explore 信息不足 → Librarian；必要时触发 Oracle 分析 Librarian 输出 |
-| **复杂任务** (score ≥ 6) | ✅ 必需 | ⚠️ 条件触发 | ✅ 必需 | ⚠️ 意图触发 | Explore 信息不足 → Librarian；Oracle 分析 Librarian 输出 |
+| **中等任务** (3 ≤ score < 7) | ✅ 必需 | ⚠️ 条件触发 | ⚠️ 可选 | ⚠️ 意图触发 | Explore 信息不足 → Librarian；必要时触发 Oracle 分析 Librarian 输出 |
+| **复杂任务** (score ≥ 7) | ✅ 必需 | ⚠️ 条件触发 | ✅ 必需 | ⚠️ 意图触发 | Explore 信息不足 → Librarian；Oracle 分析 Librarian 输出 |
 
 **Explore 任务特殊规则**：
 - 执行探索前，先检查目标文件所在目录是否存在 `AGENTS.md`
@@ -175,29 +175,29 @@ const followUpResult = await Task({
 ### 评分模型
 
 ```python
-complexity_score = num_subtasks * 1.0 + needs_research * 2.5
+complexity_score = num_subtasks * 1.0 + needs_research * 1.5
 ```
 
 | 因子 | 评估标准 | 权重 |
 |------|---------|------|
 | num_subtasks | 独立子任务数量 | 1.0 |
-| needs_research | 是否需要外部研究 | 2.5 |
+| needs_research | 是否需要外部研究 | 1.5 |
 
 ### 复杂度分类
 
 | 评分 | 分类 | Session策略 |
 |------|------|-----------|
 | < 3 | Simple | 所有 Sub-Agent 在当前 session |
-| 3 ≤ score < 6 | Moderate | Librarian/Oracle 使用子 session |
-| ≥ 6 | Complex | 除 Metis 外所有使用子 session |
+| 3 ≤ score < 7 | Moderate | Librarian/Oracle 使用子 session |
+| ≥ 7 | Complex | 除 Metis 外所有使用子 session |
 
-**边界值说明**：评分 6 归入 Complex，评分 <6 归入 Moderate
+**边界值说明**：评分 7 归入 Complex，评分 <7 归入 Moderate
 
 ### Session策略决策（Moderate/Complex 必须询问）
 
 使用 `question` 工具让用户确认策略：
 
-| 选项 | Simple | Moderate (3≤score<6) | Complex (≥6) |
+| 选项 | Simple | Moderate (3≤score<7) | Complex (≥7) |
 |------|--------|---------------------|-------------|
 | Accept Recommended | auto | Librarian/Oracle→sub | 除Metis外→sub |
 | Force Current | - | 全部current | 全部current |
@@ -226,8 +226,8 @@ complexity_score = num_subtasks * 1.0 + needs_research * 2.5
 | 复杂度分类 | Accept Recommended | Force Current | Custom |
 |-----------|---------------------|--------------|--------|
 | **Simple** (<3) | 所有 Agent 在当前 session | 所有 Agent 在当前 session | 用户指定 |
-| **Moderate** (3≤score<6) | Metis/Momus: Current<br>Librarian/Oracle: Sub<br>Explore/Multimodal-Looker: Current | 所有 Agent 在当前 session | 用户指定 |
-| **Complex** (≥6) | Metis/Momus: Current<br>其他: Sub | 所有 Agent 在当前 session | 用户指定 |
+| **Moderate** (3≤score<7) | Metis/Momus: Current<br>Librarian/Oracle: Sub<br>Explore/Multimodal-Looker: Current | 所有 Agent 在当前 session | 用户指定 |
+| **Complex** (≥7) | Metis/Momus: Current<br>其他: Sub | 所有 Agent 在当前 session | 用户指定 |
 
 ### ⚠️ 常见错误：错误地使用 `task` 工具
 
@@ -677,7 +677,7 @@ function performMetisAnalysis(userRequest, complexity) {
 
   // 根据复杂度选择映射
   let mapping
-  if (complexity.forced && complexity.score >= 6 && intentToAgentsMap[detectedIntent]?.complex) {
+  if (complexity.forced && complexity.score >= 7 && intentToAgentsMap[detectedIntent]?.complex) {
     mapping = intentToAgentsMap[detectedIntent].complex
   } else {
     mapping = intentToAgentsMap[detectedIntent] || intentToAgentsMap['通用任务']
@@ -692,7 +692,7 @@ function performMetisAnalysis(userRequest, complexity) {
 
 **意图类型**: ${detectedIntent}
 
-**复杂度评估**: ${complexity.forced ? `Complex (forced, score ≥ 6)` : `${complexity.score < 3 ? 'Simple' : complexity.score < 6 ? 'Moderate' : 'Complex'} (score = ${complexity.score})`}
+**复杂度评估**: ${complexity.forced ? `Complex (forced, score ≥ 7)` : `${complexity.score < 3 ? 'Simple' : complexity.score < 7 ? 'Moderate' : 'Complex'} (score = ${complexity.score})`}
 
 ## Gap Identification
 
