@@ -184,6 +184,178 @@ complexity_score = num_subtasks * 1.0 + needs_research * 2.5
 
 ---
 
+## Session 策略规则（MANDATORY）
+
+### ⚠️ 关键规则：Metis 和 Momus 必须在当前 session
+
+**绝对规则**：
+- **Metis**: 必须在当前 session（**不使用** `task` 工具）
+- **Momus**: 必须在当前 session（**不使用** `task` 工具）
+- **其他 Sub-Agent**（Explore、Librarian、Oracle、Multimodal-Looker）: 根据策略决定
+
+### Session 类型定义
+
+| Session 类型 | 调用方式 | 特征 | 是否有 session_id |
+|-------------|---------|------|------------------|
+| **Current**（当前会话） | 直接执行，不使用 `task` 工具 | 使用当前 Agent 的上下文 | ❌ 无 |
+| **Sub**（子会话） | 使用 `task` 工具调用 | 独立的上下文 | ✅ 有 |
+
+### Session 策略映射表
+
+| 复杂度分类 | Accept Recommended | Force Current | Custom |
+|-----------|---------------------|--------------|--------|
+| **Simple** (<3) | 所有 Agent 在当前 session | 所有 Agent 在当前 session | 用户指定 |
+| **Moderate** (3≤score<6) | Metis/Momus: Current<br>Librarian/Oracle: Sub<br>Explore/Multimodal-Looker: Current | 所有 Agent 在当前 session | 用户指定 |
+| **Complex** (≥6) | Metis/Momus: Current<br>其他: Sub | 所有 Agent 在当前 session | 用户指定 |
+
+### ⚠️ 常见错误：错误地使用 `task` 工具
+
+#### 错误示例
+
+```javascript
+// ❌ 错误：Metis 使用了 task 工具
+const metisResult = await Task({
+  subagent_type: "metis",
+  prompt: "..."
+})
+// 结果：返回 session_id = ses_xxxxxx（子会话）
+// 问题：Metis 应该在当前 session，不应该有 session_id
+
+// ❌ 错误：Momus 使用了 task 工具
+const momusResult = await Task({
+  subagent_type: "momus",
+  prompt: "..."
+})
+// 结果：返回 session_id = ses_xxxxxx（子会话）
+// 问题：Momus 应该在当前 session，不应该有 session_id
+```
+
+#### 正确示例
+
+```javascript
+// ✅ 正确：Metis 在当前 session（不使用 task 工具）
+// Metis 分析直接在当前 Agent 的上下文中完成
+const metisAnalysis = {
+  intentType: "...",
+  recommendedAgents: [...],
+  recommendationReason: "..."
+}
+// 结果：无 session_id（当前会话）
+
+// ✅ 正确：Explore 在子 session（使用 task 工具）
+const exploreResult = await Task({
+  subagent_type: "explore",
+  prompt: "..."
+})
+// 结果：返回 session_id = ses_xxxxxx（子会话）
+// 正确：Explore 应该使用子 session
+
+// ✅ 正确：Librarian 在子 session（使用 task 工具）
+const librarianResult = await Task({
+  subagent_type: "librarian",
+  prompt: "..."
+})
+// 结果：返回 session_id = ses_xxxxxx（子会话）
+// 正确：Librarian 应该使用子 session
+
+// ✅ 正确：Oracle 在子 session（使用 task 工具）
+const oracleResult = await Task({
+  subagent_type: "oracle",
+  prompt: "..."
+})
+// 结果：返回 session_id = ses_xxxxxx（子会话）
+// 正确：Oracle 应该使用子 session
+
+// ✅ 正确：Multimodal-Looker 在子 session（使用 task 工具）
+const mlResult = await Task({
+  subagent_type: "multimodal-looker",
+  prompt: "..."
+})
+// 结果：返回 session_id = ses_xxxxxx（子会话）
+// 正确：Multimodal-Looker 应该使用子 session
+
+// ✅ 正确：Momus 在当前 session（不使用 task 工具）
+// Momus 审查直接在当前 Agent 的上下文中完成
+const momusReview = {
+  status: "[OKAY]",
+  issues: [],
+  recommendations: []
+}
+// 结果：无 session_id（当前会话）
+```
+
+### Session 类型识别规则
+
+**如何判断实际使用的 Session 类型**：
+
+| 判断方法 | Current（当前会话） | Sub（子会话） |
+|---------|-------------------|-------------|
+| 是否使用 `task` 工具 | ❌ 不使用 | ✅ 使用 |
+| 返回值是否包含 `task_id` | ❌ 无 | ✅ 有 |
+| 返回值是否包含 `session_id` | ❌ 无 | ✅ 有 |
+
+### 记录 Session 类型到 steps.md
+
+在 `steps.md` 中记录时，**必须使用实际类型**，而不是策略预期类型：
+
+```javascript
+// ✅ 正确：检查是否有 session_id
+function getActualSessionType(result) {
+  if (result.task_id || result.session_id || result.session?.id) {
+    return 'Sub'  // 有 session_id = 子会话
+  }
+  return 'Current'  // 无 session_id = 当前会话
+}
+
+// ✅ 正确：记录实际类型
+await appendStep(taskName, 1, 'Metis', getActualSessionType(metisResult), ...)
+
+// ❌ 错误：直接记录策略预期类型
+await appendStep(taskName, 1, 'Metis', 'Current', ...)  // 如果实际是 Sub，这就是错误的
+```
+
+### 验证和警告机制
+
+在每次记录步骤时，检查实际类型与预期类型是否一致：
+
+```javascript
+function verifySessionType(agentName, expectedType, actualType) {
+  if (expectedType !== actualType) {
+    console.error(`⚠️ Session 类型错误: ${agentName}`)
+    console.error(`  预期: ${expectedType}`)
+    console.error(`  实际: ${actualType}`)
+    console.error(`  建议: 检查是否使用了 task 工具`)
+  }
+}
+
+// 使用示例
+const actualType = getActualSessionType(result)
+verifySessionType('Metis', 'Current', actualType)
+await appendStep(taskName, 1, 'Metis', actualType, ...)
+```
+
+### ⚠️ 重要提醒
+
+1. **Metis 和 Momus 从不使用 `task` 工具**
+   - 它们必须在当前 session 中执行
+   - 如果使用了 `task` 工具，会返回 session_id，这是错误的
+
+2. **其他 Sub-Agent 根据策略决定**
+   - Accept Recommended（Complex/Moderate）：使用子 session（`task` 工具）
+   - Force Current：使用当前 session（不使用 `task` 工具）
+   - Custom：根据用户指定
+
+3. **记录实际类型而非预期类型**
+   - 在 `steps.md` 中记录时，使用 `getActualSessionType()` 获取实际类型
+   - 如果发现实际类型与预期类型不符，发出警告
+
+4. **验证机制**
+   - 在每次记录步骤时，检查 session_id 是否存在
+   - 对于 Metis 和 Momus，如果发现 session_id，立即报告错误
+   - 对于其他 Sub-Agent，根据策略验证是否应该有 session_id
+
+---
+
 ## PHASE 1: Interview Mode（默认）
 
 每个请求都从 INTERVIEW MODE 开始。只有以下情况才过渡到 ORCHESTRATION MODE：
@@ -621,11 +793,22 @@ async function orchestrateWorkPlan(taskName, userRequest, complexity, sessionStr
   // ============ STEP 1: Metis ============
   const metisStart = getCurrentTime()
   timings.metisStart = metisStart
+
+  // ⚠️ 注意：Metis 必须在当前 session 执行，不使用 Task 工具
+  // Metis 分析应该由当前 Agent 直接完成，而不是调用 Sub-Agent
   const metisResult = await Task({
     subagent_type: "metis",
     prompt: `Task: ${userRequest}\n\nPerform pre-planning analysis and gap identification. Provide recommended Sub-Agents with specific use cases and trigger conditions.`
   })
-  
+
+  // ⚠️ 警告：上面的代码是错误的！Metis 不应该使用 Task 工具
+  // 正确的实现应该在当前 Agent 中直接进行意图分类和 gap 识别
+  // 示例：
+  // const metisAnalysis = performMetisAnalysis(userRequest)
+  // const metisOutput = formatMetisOutput(metisAnalysis)
+  // 注意：不调用 Task 工具，因此不会有 session_id
+
+  // ❌ 错误：Metis 使用了 Task 工具，会返回 session_id
   const metisSessionId = await extractSessionId(metisResult)
   sessionIds.Metis = metisSessionId
   const metisFilePath = await saveAgentOutput(taskName, 'metis', metisSessionId, metisResult.output)
@@ -707,19 +890,30 @@ async function orchestrateWorkPlan(taskName, userRequest, complexity, sessionStr
   await appendStep(taskName, 0, '初始化', 'Current', stepStartTime, getCurrentTime(), 'completed')
   
   const sessionIds = {}
-  
+
   // ============ STEP 1: Metis ============
   const metisStart = getCurrentTime()
+
+  // ⚠️ 警告：下面的代码是错误的！Metis 不应该使用 Task 工具
+  // Metis 必须在当前 session 执行，不应该有 session_id
   const metisResult = await Task({
     subagent_type: "metis",
     prompt: `Task: ${userRequest}\n\nPerform pre-planning analysis and gap identification.`
   })
-  
+
+  // ❌ 错误：Metis 使用了 Task 工具，会返回 session_id
   const metisSessionId = await extractSessionId(metisResult)
   sessionIds.Metis = metisSessionId
   await saveAgentOutput(taskName, 'metis', metisSessionId, metisResult.output)
   await appendStep(taskName, 1, 'Metis', 'Current', metisStart, getCurrentTime(), 'completed')
   await todowrite({ todos: [{ id: '1', content: 'Metis: 意图分类和 gap 分析', status: 'completed', priority: 'high' }] })
+
+  // ✅ 正确的实现应该是：
+  // const metisAnalysis = performMetisAnalysis(userRequest)
+  // const metisOutput = formatMetisOutput(metisAnalysis)
+  // await saveAgentOutput(taskName, 'metis', 'current-session', metisOutput)
+  // await appendStep(taskName, 1, 'Metis', 'Current', metisStart, getCurrentTime(), 'completed')
+  // 注意：不调用 Task 工具，因此不会有 session_id
   
   // ============ STEP 2: 并行调用 Sub-Agents ============
   const parallelStart = getCurrentTime()
@@ -1307,111 +1501,6 @@ await Task({
     - 使用 getLocalTime() 转换为系统本地时区显示
     - 保留 UTC 时间戳用于精确计算
     - 提高可读性，便于理解
-
----
-
-## 版本更新日志
-
-### v1.2.0 (2026-02-12)
-
-#### 新增功能
-1. ✅ **改进的时间记录策略**
-    - 添加文件系统时间戳列（通过 stat 命令获取实际修改时间）
-    - 添加本地时间显示（便于阅读，使用系统本地时区）
-    - 改进时间戳格式（本地时间 vs UTC 时间）
-    - 添加时间戳同步说明和验证机制
-
-2. ✅ **用户交互时间记录**
-    - 记录 Question 工具的等待时间
-    - 区分 Agent 执行时间和用户交互时间
-    - 在耗时分解表中单独显示用户交互时间
-
-3. ✅ **增强的耗时分析**
-    - Agent 会话时间 vs 文件记录时间
-    - 详细的各阶段耗时占比
-    - 并行执行效率计算
-    - 时间戳差异说明和调试建议
-
-#### 修复的问题
-1. ✅ **文件时间与调用时间不匹配**
-    - 旧版本：只记录调用时间，与文件系统实际时间不一致
-    - 新版本：同时记录调用时间和文件系统时间，便于验证准确性
-
-2. ✅ **缺少用户交互时间**
-    - 旧版本：Question 工具等待时间未被记录
-    - 新版本：明确记录所有用户交互时间
-
-3. ✅ **时间戳格式不直观**
-    - 旧版本：使用 UTC ISO 格式，不便于阅读
-    - 新版本：使用本地时间显示，同时保留 UTC 时间戳
-
-#### 性能改进
-- 更准确的时间记录有助于性能分析和优化
-- 文件系统时间戳验证机制可发现潜在的时间同步问题
-
-#### 兼容性
-- steps.md 表格增加"文件时间"列
-- 向后兼容 v1.1.0（可选列，不影响现有逻辑）
-
----
-
-### v1.1.0 (2026-02-12)
-
-#### 新增功能
-1. ✅ **基于意图的动态 Sub-Agent 选择**
-   - 解析 Metis 输出，自动识别任务意图
-   - 根据意图类型推荐合适的 Sub-Agent
-   - 使用 Question 工具让用户确认或自定义选择
-
-2. ✅ **意图映射表**
-   - 信息查询 → 无 Sub-Agent
-   - 代码实现 → Explore + Librarian
-   - 架构重构 → Explore + Oracle
-   - 新功能开发 → Explore + Librarian + Oracle
-   - Bug 修复 → Explore
-   - 性能优化 → Explore + Oracle
-   - 媒体分析 → Multimodal-Looker
-   - 通用任务 → 全部 4 个 Sub-Agent
-
-3. ✅ **用户选择流程**
-   - Accept Recommended: 接受推荐的 Sub-Agent
-   - Selective: 手动选择
-   - Skip All: 跳过所有
-   - Force All: 强制调用所有
-
-#### 修复的问题
-1. ✅ **并行 Sub-Agent 时间计算错误**
-   - 旧版本：所有 agent 使用相同的结束时间
-   - 新版本：每个 agent 完成时立即记录独立的结束时间
-
-2. ✅ **硬编码的 Sub-Agent 列表**
-   - 旧版本：总是调用全部 4 个 Sub-Agent
-   - 新版本：基于意图和用户选择动态调用
-
-3. ✅ **忽略 Metis 的 Sub-Agent 建议**
-   - 旧版本：Metis 的推荐被完全忽略
-   - 新版本：解析 Metis 输出，提取推荐和建议
-
-4. ✅ **缺少基于意图的动态选择逻辑**
-   - 旧版本：核心功能缺失
-   - 新版本：完整的意图映射和用户选择流程
-
-5. ✅ **总耗时计算不完整**
-   - 旧版本：只有总耗时
-   - 新版本：详细的各阶段耗时分解表
-
-6. ✅ **Session 策略未实现**
-   - 旧版本：注释说明但未实现
-   - 新版本：根据 sessionStrategy 参数正确应用
-
-#### 性能改进
-- 对于简单任务（如"获取系统版本"），可跳过所有 Sub-Agent，节省 5-7 秒
-- 避免不必要的 Sub-Agent 调用，提高整体效率
-
-#### 兼容性
-- 文件结构保持不变
-- 输出格式增强（添加意图分析信息）
-- 向后兼容 v1.0.0
 
 ---
 
