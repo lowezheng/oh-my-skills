@@ -454,6 +454,7 @@ function calculateDuration(startTime, endTime) {
   const start = new Date(startTime).getTime()
   const end = new Date(endTime).getTime()
   const duration = Math.round((end - start) / 1000)
+  if (duration < 0) return `~0s`  // 防止负值
   if (duration < 60) return `${duration}s`
   if (duration < 3600) return `${Math.floor(duration / 60)}m ${duration % 60}s`
   return `${Math.floor(duration / 3600)}h ${Math.floor((duration % 3600) / 60)}m`
@@ -463,7 +464,7 @@ function calculateDuration(startTime, endTime) {
 function calculateDurationMs(startTime, endTime) {
   const start = new Date(startTime).getTime()
   const end = new Date(endTime).getTime()
-  return end - start
+  return Math.max(0, end - start)  // 防止负值
 }
 
 // 记录用户交互时间（Question 工具等待时间）
@@ -583,8 +584,7 @@ async function extractSessionId(result) {
   return session_id
 }
 
-async function saveAgentOutput(taskName, agentType, sessionId, content) {
-  const timestamp = Date.now()
+async function saveAgentOutput(taskName, agentType, sessionId, content, timestamp = Date.now()) {
   const filePath = `.plans/${taskName}/thinks/${agentType}-${sessionId}-${timestamp}.md`
   await write({ content, filePath })
   return filePath
@@ -595,7 +595,7 @@ async function saveAgentOutput(taskName, agentType, sessionId, content) {
 // 解析 Metis 输出，识别意图类型和推荐的 Sub-Agent
 function parseMetisOutput(metisOutput) {
   const output = metisOutput.toLowerCase()
-  
+
   // 意图关键词映射
   const intentKeywords = {
     '信息查询': ['信息查询', '获取', '查询', 'fetch', 'get', 'query', 'retrieve'],
@@ -606,7 +606,7 @@ function parseMetisOutput(metisOutput) {
     '性能优化': ['性能优化', '优化', '性能', 'optimize', 'performance', 'optimization'],
     '媒体分析': ['媒体分析', '分析 pdf', '分析图片', '图表', 'media analysis', 'analyze pdf', 'analyze image']
   }
-  
+
   // 检测意图类型
   let detectedIntent = '通用任务'
   for (const [intent, keywords] of Object.entries(intentKeywords)) {
@@ -615,7 +615,7 @@ function parseMetisOutput(metisOutput) {
       break
     }
   }
-  
+
   // 意图到推荐 Sub-Agent 的映射
   const intentToAgentsMap = {
     '信息查询': { recommended: [], reason: '简单信息查询，无需额外 Sub-Agent' },
@@ -627,15 +627,88 @@ function parseMetisOutput(metisOutput) {
     '媒体分析': { recommended: ['multimodal-looker'], reason: '需要分析媒体文件' },
     '通用任务': { recommended: ['explore', 'librarian', 'oracle', 'multimodal-looker'], reason: '通用任务，调用全部 Sub-Agent' }
   }
-  
+
   const { recommended, reason } = intentToAgentsMap[detectedIntent] || intentToAgentsMap['通用任务']
-  
+
   return {
     intentType: detectedIntent,
     recommendedAgents: recommended,
     recommendationReason: reason,
     originalOutput: metisOutput
   }
+}
+
+// 执行 Metis 分析（在当前 session 中）
+function performMetisAnalysis(userRequest, complexity) {
+  // 根据用户请求和复杂度进行意图分类
+  const output = userRequest.toLowerCase()
+
+  // 意图关键词匹配
+  let detectedIntent = '通用任务'
+  for (const [intent, keywords] of Object.entries({
+    '信息查询': ['信息查询', '获取', '查询', 'fetch', 'get', 'query', 'retrieve'],
+    '代码实现': ['代码实现', '实现', '开发', '实现功能', 'implement', 'build', 'develop', 'create feature'],
+    '架构重构': ['架构重构', '重构', '重构模块', 'refactor', 'restructure'],
+    '新功能开发': ['新功能开发', '新功能', '添加功能', '新特性', 'new feature', 'add feature', 'feature development'],
+    'Bug 修复': ['bug 修复', '修复 bug', 'fix bug', '修复问题', 'fix issue'],
+    '性能优化': ['性能优化', '优化', '性能', 'optimize', 'performance', 'optimization'],
+    '媒体分析': ['媒体分析', '分析 pdf', '分析图片', '图表', 'media analysis', 'analyze pdf', 'analyze image']
+  })) {
+    if (keywords.some(keyword => output.includes(keyword))) {
+      detectedIntent = intent
+      break
+    }
+  }
+
+  // 意图到推荐 Sub-Agent 的映射（考虑复杂度）
+  const intentToAgentsMap = {
+    '信息查询': {
+      simple: { recommended: [], reason: '简单信息查询，无需额外 Sub-Agent' },
+      complex: { recommended: ['explore', 'librarian', 'oracle'], reason: '用户强制复杂模式，全面分析信息获取方案' }
+    },
+    '代码实现': { recommended: ['explore', 'librarian'], reason: '需要探索代码库和外部研究' },
+    '架构重构': { recommended: ['explore', 'oracle'], reason: '需要架构决策和代码探索' },
+    '新功能开发': { recommended: ['explore', 'librarian', 'oracle'], reason: '全面分析新功能实现' },
+    'Bug 修复': { recommended: ['explore'], reason: '探索相关代码定位问题' },
+    '性能优化': { recommended: ['explore', 'oracle'], reason: '分析性能瓶颈和架构优化' },
+    '媒体分析': { recommended: ['multimodal-looker'], reason: '需要分析媒体文件' },
+    '通用任务': { recommended: ['explore', 'librarian', 'oracle', 'multimodal-looker'], reason: '通用任务，调用全部 Sub-Agent' }
+  }
+
+  // 根据复杂度选择映射
+  let mapping
+  if (complexity.forced && complexity.score >= 6 && intentToAgentsMap[detectedIntent]?.complex) {
+    mapping = intentToAgentsMap[detectedIntent].complex
+  } else {
+    mapping = intentToAgentsMap[detectedIntent] || intentToAgentsMap['通用任务']
+  }
+
+  // 生成 Metis 输出（作为 Sub-Agent 的上下文）
+  const metisOutput = `Task: ${userRequest}
+
+# Metis Pre-Planning Analysis
+
+## Intent Classification
+
+**意图类型**: ${detectedIntent}
+
+**复杂度评估**: ${complexity.forced ? `Complex (forced, score ≥ 6)` : `${complexity.score < 3 ? 'Simple' : complexity.score < 6 ? 'Moderate' : 'Complex'} (score = ${complexity.score})`}
+
+## Gap Identification
+
+1. **实现方式未知**: 需要确定具体的实现方案
+2. **技术选型未知**: 需要分析最佳技术选型
+3. **验证标准未知**: 需要定义验收标准
+
+## Recommended Sub-Agents
+
+${mapping.recommended.length > 0 ? mapping.recommended.map((a, i) => `${i + 1}. **${a.charAt(0).toUpperCase() + a.slice(1)}**: ${getAgentDescription(a)}`).join('\n') : '无（简单任务无需额外 Sub-Agent）'}
+
+**推荐理由**: ${mapping.reason}
+
+${complexity.forced ? `**Complexity Override**\n**正常评估**: Simple (score = ${complexity.score}, num_subtasks = ${complexity.num_subtasks}, needs_research = ${complexity.needs_research})\n**用户强制**: Complex (score ≥ 6, for testing subagent scheduling efficiency)` : ''}`
+
+  return metisOutput
 }
 
 // 使用 Question 工具让用户选择 Sub-Agent 调用策略
@@ -742,16 +815,16 @@ async function orchestrateWorkPlan(taskName, userRequest, complexity, sessionStr
   timings.metisStart = metisStart
 
   // ✅ Metis 在当前 session 执行，不使用 Task 工具
-  // 直接进行意图分类和 gap 识别
-  const metisOutput = `Task: ${userRequest}\n\n# Metis Pre-Planning Analysis\n\n## Intent Classification\n[意图分类结果]\n\n## Gap Identification\n[gap识别结果]\n\n## Recommended Sub-Agents\n[推荐Sub-Agent列表]`
+  // 执行意图分类和 gap 识别
+  const metisOutput = performMetisAnalysis(userRequest, complexity)
+  const metisAnalysis = parseMetisOutput(metisOutput)  // 解析 Metis 输出
   sessionIds.Metis = 'current-session'
-  const metisFilePath = await saveAgentOutput(taskName, 'metis', 'current-session', metisOutput)
+  const metisFilePath = await saveAgentOutput(taskName, 'metis', 'current-session', metisOutput, new Date(metisStart).getTime())
   await appendStep(taskName, 1, 'Metis', 'Current', metisStart, getCurrentTime(), 'completed', metisFilePath)
   await todowrite({ todos: [{ id: '1', content: 'Metis: 意图分类和 gap 分析', status: 'completed', priority: 'high' }] })
   timings.metisEnd = getCurrentTime()
-  
-  // ============ STEP 1.5: 解析 Metis 输出 + 用户选择 Sub-Agent ============
-  const metisAnalysis = parseMetisOutput(metisResult.output)
+
+  // ============ STEP 1.5: 用户选择 Sub-Agent ============
   const interactionStart = getCurrentTime()
   const subAgentSelection = await getSubAgentSelection(metisAnalysis)
   const interactionEnd = getCurrentTime()
@@ -791,6 +864,7 @@ async function orchestrateWorkPlan(taskName, userRequest, complexity, sessionStr
       parallelResults = await Promise.all(
         subAgentsToCall.map(async (agentType) => {
           const agentStart = getCurrentTime()
+          const agentStartMs = new Date(agentStart).getTime()
 
           // 按需更新：开始前更新为 in_progress
           await todowrite({
@@ -814,14 +888,18 @@ async function orchestrateWorkPlan(taskName, userRequest, complexity, sessionStr
           const taskParams = {
             subagent_type: agentType,
             description: `${getAgentDescription(agentType)}: ${agentType} analysis`,
-            prompt: `Task context: ${metisResult.output}\n\nPerform ${agentType} analysis.`
+            prompt: `Task context: ${metisOutput}\n\n# Task\nPerform ${agentType} analysis for: ${userRequest}`
           }
 
           const result = await Task(taskParams)
 
+          // ⚠️ 关键：立即记录结束时间
           const agentEnd = getCurrentTime()
+          const agentEndMs = new Date(agentEnd).getTime()
           const sessionId = await extractSessionId(result)
-          const agentFilePath = await saveAgentOutput(taskName, agentType, sessionId, result.output)
+
+          // ⚠️ 关键：使用 agentStartMs 作为文件名时间戳
+          const agentFilePath = await saveAgentOutput(taskName, agentType, sessionId, result.output, agentStartMs)
           sessionIds[agentType.charAt(0).toUpperCase() + agentType.slice(1)] = sessionId
 
           await appendStep(taskName, 2 + subAgentsToCall.indexOf(agentType),
@@ -839,7 +917,7 @@ async function orchestrateWorkPlan(taskName, userRequest, complexity, sessionStr
           completedTodos.push({ id: '6', content: '生成工作计划', status: 'pending', priority: 'high' })
           await todowrite({ todos: completedTodos })
 
-          return { agentType, sessionId, output: result.output, agentStart, agentEnd }
+          return { agentType, sessionId, output: result.output, agentStart, agentEnd, agentStartMs, agentEndMs }
         })
       )
     } else {
@@ -847,6 +925,7 @@ async function orchestrateWorkPlan(taskName, userRequest, complexity, sessionStr
       parallelResults = []
       for (const agentType of subAgentsToCall) {
         const agentStart = getCurrentTime()
+        const agentStartMs = new Date(agentStart).getTime()
 
         // 按需更新：开始前更新为 in_progress
         await todowrite({
@@ -870,14 +949,18 @@ async function orchestrateWorkPlan(taskName, userRequest, complexity, sessionStr
         const taskParams = {
           subagent_type: agentType,
           description: `${getAgentDescription(agentType)}: ${agentType} analysis`,
-          prompt: `Task context: ${metisResult.output}\n\nPerform ${agentType} analysis.`
+          prompt: `Task context: ${metisOutput}\n\n# Task\nPerform ${agentType} analysis for: ${userRequest}`
         }
 
         const result = await Task(taskParams)
 
+        // ⚠️ 关键：立即记录结束时间
         const agentEnd = getCurrentTime()
+        const agentEndMs = new Date(agentEnd).getTime()
         const sessionId = await extractSessionId(result)
-        const agentFilePath = await saveAgentOutput(taskName, agentType, sessionId, result.output)
+
+        // ⚠️ 关键：使用 agentStartMs 作为文件名时间戳
+        const agentFilePath = await saveAgentOutput(taskName, agentType, sessionId, result.output, agentStartMs)
         sessionIds[agentType.charAt(0).toUpperCase() + agentType.slice(1)] = sessionId
 
         await appendStep(taskName, 2 + subAgentsToCall.indexOf(agentType),
@@ -895,7 +978,7 @@ async function orchestrateWorkPlan(taskName, userRequest, complexity, sessionStr
         completedTodos.push({ id: '6', content: '生成工作计划', status: 'pending', priority: 'high' })
         await todowrite({ todos: completedTodos })
 
-        parallelResults.push({ agentType, sessionId, output: result.output, agentStart, agentEnd })
+        parallelResults.push({ agentType, sessionId, output: result.output, agentStart, agentEnd, agentStartMs, agentEndMs })
       }
     }
 
@@ -915,12 +998,12 @@ async function orchestrateWorkPlan(taskName, userRequest, complexity, sessionStr
   // ============ STEP 3: 生成计划 ============
   const planStart = getCurrentTime()
   timings.planStart = planStart
-  
-  const planContent = generatePlanFromOutputs(taskName, userRequest, metisResult.output, parallelResults, metisAnalysis)
-  const planTimestamp = new Date().toISOString().replace(/[:.]/g, '').slice(0, 15)
+
+  const planContent = generatePlanFromOutputs(taskName, userRequest, metisOutput, parallelResults, metisAnalysis, complexity)
+  const planTimestamp = new Date(planStart).getTime()
   const planPath = `.plans/${taskName}/v1.0.0-${planTimestamp}.md`
   await write({ content: planContent, filePath: planPath })
-  
+
   await appendStep(taskName, subAgentsToCall.length > 0 ? 2 + subAgentsToCall.length : 2, '计划生成', 'Current', planStart, getCurrentTime(), 'completed', planPath)
   await todowrite({ todos: [{ id: '6', content: '生成工作计划', status: 'completed', priority: 'high' }] })
   timings.planEnd = getCurrentTime()
@@ -999,7 +1082,6 @@ async function orchestrateWorkPlan(taskName, userRequest, complexity, sessionStr
     const initDuration = calculateDuration(timings.initStart, timings.initEnd)
     const metisDuration = calculateDuration(timings.metisStart, timings.metisEnd)
     const parallelDuration = parallelResults.length > 0 ? calculateDuration(timings.parallelStart, timings.parallelEnd) : '0s'
-    const planDuration = calculateDuration(timings.planStart, timings.planEnd)
     const initMs = calculateDurationMs(timings.initStart, timings.initEnd)
     const metisMs = calculateDurationMs(timings.metisStart, timings.metisEnd)
     const parallelMs = parallelResults.length > 0 ? calculateDurationMs(timings.parallelStart, timings.parallelEnd) : 0
@@ -1007,7 +1089,10 @@ async function orchestrateWorkPlan(taskName, userRequest, complexity, sessionStr
 
     // 计算顺序执行的总时间（用于并行效率分析）
     const seqTotalMs = parallelResults.length > 0
-      ? parallelResults.reduce((sum, r) => sum + calculateDurationMs(r.agentStart, r.agentEnd), 0)
+      ? parallelResults.reduce((sum, r) => {
+        const durationMs = r.agentEndMs && r.agentStartMs ? (r.agentEndMs - r.agentStartMs) : 0
+        return sum + durationMs
+      }, 0)
       : 0
 
     // 计算文件系统时间与调用时间的差异
@@ -1078,9 +1163,9 @@ ${fileSystemSyncNotes}
   }
 }
 
-function generatePlanFromOutputs(taskName, userRequest, metisOutput, parallelResults, metisAnalysis) {
+function generatePlanFromOutputs(taskName, userRequest, metisOutput, parallelResults, metisAnalysis, complexity) {
   const { intentType, recommendedAgents, recommendationReason, originalOutput } = metisAnalysis
-  
+
   const subAgentContributions = parallelResults.length > 0
     ? parallelResults.map(r => `
 ### ${r.agentType.charAt(0).toUpperCase() + r.agentType.slice(1)}
@@ -1088,7 +1173,7 @@ function generatePlanFromOutputs(taskName, userRequest, metisOutput, parallelRes
 ${r.output}
 `).join('\n')
     : '> 无 Sub-Agent 调用（用户选择跳过或 Metis 未推荐）'
-  
+
   const intentDescription = {
     '信息查询': '简单的信息获取任务',
     '代码实现': '实现新的功能或特性',
@@ -1099,7 +1184,7 @@ ${r.output}
     '媒体分析': '分析媒体文件内容',
     '通用任务': '复杂的多步骤任务'
   }
-  
+
   // 综合所有 Sub-Agent 输出生成结构化计划
   return `# Work Plan: ${taskName}
 
@@ -1118,6 +1203,44 @@ ${r.output}
 - **实际调用 Sub-Agent**: ${parallelResults.length > 0 ? parallelResults.map(r => r.agentType.charAt(0).toUpperCase() + r.agentType.slice(1)).join(', ') : '无'}
 - **Sub-Agent 调用模式**: ${parallelResults.length > 0 ? '并行调用' : '跳过'}
 
+### Complexity Assessment
+
+- **正常评估**: ${complexity.forced ? `Simple (score = ${complexity.score}, num_subtasks = ${complexity.num_subtasks}, needs_research = ${complexity.needs_research})` : `${complexity.score < 3 ? 'Simple' : complexity.score < 6 ? 'Moderate' : 'Complex'} (score = ${complexity.score})`}
+${complexity.forced ? `- **用户强制**: Complex (score ≥ 6, for testing subagent scheduling efficiency)` : ''}
+
+### Session Strategy
+
+- **策略类型**: ${complexity.strategy}
+- **Metis/Momus**: Current（当前 session）
+${parallelResults.length > 0 ? '- **Explore/Librarian/Oracle**: Sub（子 session）' : ''}
+
+### Session IDs
+
+- **Metis**: current-session
+${parallelResults.map(r => `- **${r.agentType.charAt(0).toUpperCase() + r.agentType.slice(1)}**: ${r.sessionId}`).join('\n')}
+
+---
+
+## TL;DR
+
+### Quick Summary
+
+[快速摘要]
+
+### Deliverables
+
+[交付物列表]
+
+### Parallel Execution
+
+${parallelResults.length > 0 ? 'Sub-Agent 并行调用：\n' + parallelResults.map(r => `- **${r.agentType.charAt(0).toUpperCase() + r.agentType.slice(1)}**: ${getAgentDescription(r.agentType)}`).join('\n') : '无并行调用'}
+
+### Critical Path
+
+[关键路径]
+
+---
+
 ## Context
 
 ### Original Request
@@ -1130,12 +1253,18 @@ ${r.output}
 **推荐理由**: ${recommendationReason}
 
 **Metis 分析摘要**:
+\`\`\`markdown
 ${originalOutput.split('\n').slice(0, 20).join('\n')}
 ${originalOutput.split('\n').length > 20 ? '\n...\n（完整分析见 Metis 输出文件）' : ''}
+\`\`\`
+
+---
 
 ## Sub-Agent 贡献摘要
 
 ${subAgentContributions}
+
+---
 
 ## Work Objectives
 
@@ -1154,6 +1283,8 @@ ${subAgentContributions}
 ### Must NOT Have
 [必须不包含的内容]
 
+---
+
 ## Verification Strategy
 
 ### Test Decision
@@ -1162,9 +1293,15 @@ ${subAgentContributions}
 ### Agent-Executed QA Scenarios
 [零人工干预的 QA 场景]
 
+---
+
 ## TODOs
 
-[TODO 列表]
+| TODO | Recommended Agent Profile | Skills | Parallelization | Priority |
+|------|--------------------------|--------|-----------------|----------|
+| [TODO 列表] |
+
+---
 
 ## Success Criteria
 
@@ -1173,6 +1310,20 @@ ${subAgentContributions}
 
 ### Final Checklist
 [最终检查清单]
+
+---
+
+## Appendix
+
+### References
+
+[参考链接]
+
+### Related Files
+
+- \`/.plans/${taskName}/thinks/metis-current-session-{timestamp}.md\`
+${parallelResults.map(r => `- \`/.plans/${taskName}/thinks/${r.agentType}-${r.sessionId}-{timestamp}.md\``).join('\n')}
+- \`/.plans/${taskName}/steps.md\`
 `
 }
 
