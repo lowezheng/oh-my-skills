@@ -211,7 +211,7 @@ complexity_score = num_subtasks * 1.0 + needs_research * 2.5
 
 **绝对规则**：
 - **Metis**: 必须在当前 session（**不使用** `task` 工具）
-- **Momus**: 必须在子 session（**使用** `task` 工具）
+- **Momus**: 必须在当前 session（**不使用** `task` 工具）
 - **其他 Sub-Agent**（Explore、Librarian、Oracle、Multimodal-Looker）: 根据策略决定
 
 ### Session 类型定义
@@ -886,7 +886,7 @@ async function orchestrateWorkPlan(taskName, userRequest, complexity, sessionStr
   timings.parallelStart = parallelStart
 
   if (subAgentsToCall.length > 0) {
-    // 创建初始 todos（状态：pending）
+    // 创建初始 todos（状态：pending）- 按需更新
     const agentTodos = subAgentsToCall.map((agentType, index) => ({
       id: String(2 + index),
       content: `${getAgentDescription(agentType)}`,
@@ -896,20 +896,91 @@ async function orchestrateWorkPlan(taskName, userRequest, complexity, sessionStr
     agentTodos.push({ id: '6', content: '生成工作计划', status: 'pending', priority: 'high' })
     await todowrite({ todos: agentTodos })
 
-    // 更新状态为 in_progress（在调用 Sub-Agent 之前）
-    const inProgressTodos = subAgentsToCall.map((agentType, index) => ({
-      id: String(2 + index),
-      content: `${getAgentDescription(agentType)}`,
-      status: 'in_progress',
-      priority: getAgentPriority(agentType)
-    }))
-    inProgressTodos.push({ id: '6', content: '生成工作计划', status: 'pending', priority: 'high' })
-    await todowrite({ todos: inProgressTodos })
+    // 根据实际场景决定并行或串行调用
+    // 简单任务（<3分）：串行调用，避免过度并行
+    // 中等/复杂任务（≥3分）：并行调用，提高效率
+    const shouldParallel = complexity.score >= 3
 
-    // 并行调用 Sub-Agents
-    parallelResults = await Promise.all(
-      subAgentsToCall.map(async (agentType) => {
+    if (shouldParallel) {
+      // 并行调用 Sub-Agents（中等/复杂任务）
+      parallelResults = await Promise.all(
+        subAgentsToCall.map(async (agentType) => {
+          const agentStart = getCurrentTime()
+
+          // 按需更新：开始前更新为 in_progress
+          await todowrite({
+            todos: [
+              ...subAgentsToCall.filter(a => a !== agentType).map((a, i) => ({
+                id: String(2 + subAgentsToCall.indexOf(a)),
+                content: `${getAgentDescription(a)}`,
+                status: 'in_progress',
+                priority: getAgentPriority(a)
+              })),
+              {
+                id: String(2 + subAgentsToCall.indexOf(agentType)),
+                content: `${getAgentDescription(agentType)}`,
+                status: 'in_progress',
+                priority: getAgentPriority(agentType)
+              },
+              { id: '6', content: '生成工作计划', status: 'pending', priority: 'high' }
+            ]
+          })
+
+          const taskParams = {
+            subagent_type: agentType,
+            description: `${getAgentDescription(agentType)}: ${agentType} analysis`,
+            prompt: `Task context: ${metisResult.output}\n\nPerform ${agentType} analysis.`
+          }
+
+          const result = await Task(taskParams)
+
+          const agentEnd = getCurrentTime()
+          const sessionId = await extractSessionId(result)
+          const agentFilePath = await saveAgentOutput(taskName, agentType, sessionId, result.output)
+          sessionIds[agentType.charAt(0).toUpperCase() + agentType.slice(1)] = sessionId
+
+          await appendStep(taskName, 2 + subAgentsToCall.indexOf(agentType),
+                          agentType.charAt(0).toUpperCase() + agentType.slice(1),
+                          sessionStrategy.includes('sub') ? 'Sub' : 'Current',
+                          agentStart, agentEnd, 'completed', agentFilePath)
+
+          // 按需更新：完成后更新为 completed
+          const completedTodos = subAgentsToCall.map((a, i) => ({
+            id: String(2 + i),
+            content: `${getAgentDescription(a)}`,
+            status: a === agentType ? 'completed' : 'in_progress',
+            priority: getAgentPriority(a)
+          }))
+          completedTodos.push({ id: '6', content: '生成工作计划', status: 'pending', priority: 'high' })
+          await todowrite({ todos: completedTodos })
+
+          return { agentType, sessionId, output: result.output, agentStart, agentEnd }
+        })
+      )
+    } else {
+      // 串行调用 Sub-Agents（简单任务）
+      parallelResults = []
+      for (const agentType of subAgentsToCall) {
         const agentStart = getCurrentTime()
+
+        // 按需更新：开始前更新为 in_progress
+        await todowrite({
+          todos: [
+            {
+              id: String(2 + subAgentsToCall.indexOf(agentType)),
+              content: `${getAgentDescription(agentType)}`,
+              status: 'in_progress',
+              priority: getAgentPriority(agentType)
+            },
+            ...subAgentsToCall.filter(a => a !== agentType).map((a, i) => ({
+              id: String(2 + subAgentsToCall.indexOf(a)),
+              content: `${getAgentDescription(a)}`,
+              status: 'pending',
+              priority: getAgentPriority(a)
+            })),
+            { id: '6', content: '生成工作计划', status: 'pending', priority: 'high' }
+          ]
+        })
 
         const taskParams = {
           subagent_type: agentType,
@@ -918,30 +989,40 @@ async function orchestrateWorkPlan(taskName, userRequest, complexity, sessionStr
         }
 
         const result = await Task(taskParams)
-        
+
         const agentEnd = getCurrentTime()
         const sessionId = await extractSessionId(result)
         const agentFilePath = await saveAgentOutput(taskName, agentType, sessionId, result.output)
         sessionIds[agentType.charAt(0).toUpperCase() + agentType.slice(1)] = sessionId
-        
+
         await appendStep(taskName, 2 + subAgentsToCall.indexOf(agentType),
                         agentType.charAt(0).toUpperCase() + agentType.slice(1),
                         sessionStrategy.includes('sub') ? 'Sub' : 'Current',
                         agentStart, agentEnd, 'completed', agentFilePath)
-        
-        return { agentType, sessionId, output: result.output, agentStart, agentEnd }
-      })
-    )
 
-    // 更新 todos 为 completed（所有 Sub-Agent 完成后）
-    const completedTodos = subAgentsToCall.map((agentType, index) => ({
+        // 按需更新：完成后更新为 completed
+        const completedTodos = subAgentsToCall.map((a, i) => ({
+          id: String(2 + i),
+          content: `${getAgentDescription(a)}`,
+          status: a === agentType ? 'completed' : 'pending',
+          priority: getAgentPriority(a)
+        }))
+        completedTodos.push({ id: '6', content: '生成工作计划', status: 'pending', priority: 'high' })
+        await todowrite({ todos: completedTodos })
+
+        parallelResults.push({ agentType, sessionId, output: result.output, agentStart, agentEnd })
+      }
+    }
+
+    // 所有 Sub-Agent 完成后，更新所有为 completed
+    const allCompletedTodos = subAgentsToCall.map((agentType, index) => ({
       id: String(2 + index),
       content: `${getAgentDescription(agentType)}`,
       status: 'completed',
       priority: getAgentPriority(agentType)
     }))
-    completedTodos.push({ id: '6', content: '生成工作计划', status: 'pending', priority: 'high' })
-    await todowrite({ todos: completedTodos })
+    allCompletedTodos.push({ id: '6', content: '生成工作计划', status: 'pending', priority: 'high' })
+    await todowrite({ todos: allCompletedTodos })
   }
   
   timings.parallelEnd = getCurrentTime()
@@ -1053,94 +1134,80 @@ async function orchestrateWorkPlan(taskName, userRequest, complexity, sessionStr
   )
   await write({ content: updatedStepsContent, filePath: stepsPath })
   
-  // ============ STEP 5: Momus 审查（可选） ============
+  // ============ STEP 4: 用户决策（综合决策） ============
   let momusSessionId = null
-  let momusDecision = null
-  const momusInteractionStart = getCurrentTime()
-  try {
-    const momusDecisionResult = await question({
-      questions: [{
-        header: "Momus 审查",
-        question: "工作计划已生成完成。是否需要 Momus 进行可执行性审查？",
-        options: [
-          { label: "需要审查", description: "Momus 验证计划的可执行性和完整性" },
-          { label: "跳过审查", description: "计划已经足够详细，无需审查" },
-          { label: "直接执行验证", description: "跳过审查，直接执行验证命令" }
-        ]
-      }]
-    })
-    momusDecision = momusDecisionResult[0]
-    const momusInteractionEnd = getCurrentTime()
-    await recordUserInteraction(taskName, 'Momus 审查决策', momusInteractionStart, momusInteractionEnd, `选择: ${momusDecision}`)
-
-    if (momusDecision === "需要审查") {
-      const momusStart = getCurrentTime()
-      timings.momusStart = momusStart
-
-      // ⚠️ 注意：Momus 必须在当前 session 执行，不使用 Task 工具
-      // Momus 审查应该由当前 Agent 直接完成
-      const momusOutput = `# Momus Review\n\n[进行计划审查...]\n\n计划路径: ${planPath}`
-
-      // 保存 Momus 输出（使用 current-session 作为 session_id）
-      momusSessionId = 'current-session'
-      const momusFilePath = await saveAgentOutput(taskName, 'momus', momusSessionId, momusOutput)
-      await appendStep(taskName, 7, 'Momus 审查', 'Current', momusStart, getCurrentTime(), 'completed', momusFilePath)
-      timings.momusEnd = getCurrentTime()
-    } else if (momusDecision === "直接执行验证") {
-      await appendStep(taskName, 7, 'Momus 审查', 'Current', getCurrentTime(), getCurrentTime(), 'skipped')
-    } else {
-      await appendStep(taskName, 7, 'Momus 审查', 'Current', getCurrentTime(), getCurrentTime(), 'skipped')
-    }
-  } catch (e) {
-    // 用户跳过或出错
-    await appendStep(taskName, 7, 'Momus 审查', 'Current', getCurrentTime(), getCurrentTime(), 'skipped')
-  }
-  
-  // ============ STEP 6: 用户决策（是否执行验证） ============
-  const userDecisionStart = getCurrentTime()
-  timings.userDecisionStart = userDecisionStart
+  let userDecision = null
+  timings.userInteractionStart = getCurrentTime()
+  const userInteractionStart = timings.userInteractionStart
   try {
     const userDecisionResult = await question({
       questions: [{
-        header: "执行验证",
-        question: `Momus 审查${momusDecision === "需要审查" ? "完成" : "跳过"}。是否立即执行验证命令？`,
+        header: "用户决策",
+        question: "工作计划已生成完成。请选择后续操作：",
         options: [
-          { label: "立即执行", description: "执行验证命令（推荐）" },
-          { label: "跳过执行", description: "计划已完成，无需执行验证" }
+          { label: "需要 Momus 审查", description: "Momus 验证计划的可执行性和完整性" },
+          { label: "跳过审查并结束", description: "计划已经足够详细，直接结束" }
         ]
       }]
     })
-    const userDecision = userDecisionResult[0]
-    const userDecisionEnd = getCurrentTime()
-    timings.userDecisionEnd = userDecisionEnd
-    await recordUserInteraction(taskName, '执行验证决策', userDecisionStart, userDecisionEnd, `选择: ${userDecision}`)
-    await appendStep(taskName, 8, '用户决策', 'Current', userDecisionStart, userDecisionEnd, 'completed')
-  } catch (e) {
-    // 用户跳过或出错
-    timings.userDecisionEnd = getCurrentTime()
-    await appendStep(taskName, 8, '用户决策', 'Current', userDecisionStart, timings.userDecisionEnd, 'skipped')
-  }
-  
-  // ============ STEP 7: Finalize ============
-  const finalizeStart = getCurrentTime()
-  
-  // 计算各阶段耗时（先计算，但总耗时在最后计算）
-  const initDuration = calculateDuration(timings.initStart, timings.initEnd)
-  const metisDuration = calculateDuration(timings.metisStart, timings.metisEnd)
-  const parallelDuration = parallelResults.length > 0 ? calculateDuration(timings.parallelStart, timings.parallelEnd) : '0s'
-  const planDuration = calculateDuration(timings.planStart, timings.planEnd)
-  const initMs = calculateDurationMs(timings.initStart, timings.initEnd)
-  const metisMs = calculateDurationMs(timings.metisStart, timings.metisEnd)
-  const parallelMs = parallelResults.length > 0 ? calculateDurationMs(timings.parallelStart, timings.parallelEnd) : 0
-  const planMs = calculateDurationMs(timings.planStart, timings.planEnd)
+    userDecision = userDecisionResult[0]
+    const userInteractionEnd = getCurrentTime()
+    timings.userInteractionEnd = userInteractionEnd
+    await recordUserInteraction(taskName, '用户决策', userInteractionStart, userInteractionEnd, `选择: ${userDecision}`)
+    await appendStep(taskName, 4, '用户决策', 'Current', userInteractionStart, userInteractionEnd, 'completed')
 
-  // 计算顺序执行的总时间（用于并行效率分析）
-  const seqTotalMs = parallelResults.length > 0
-    ? parallelResults.reduce((sum, r) => sum + calculateDurationMs(r.agentStart, r.agentEnd), 0)
-    : 0
-  
-  // 计算文件系统时间与调用时间的差异
-  const fileSystemSyncNotes = `
+    if (userDecision === "跳过审查并结束") {
+      // 用户选择跳过审查，直接结束并告知用户计划存储位置
+      await finalizeAndReturn(taskName, planPath, stepStartTime, timings, interactionStart, parallelResults, subAgentsToCall, subAgentSelection, userDecision)
+      return { planPath, sessionIds, subAgentSelection }
+    }
+  } catch (e) {
+    // 用户跳过或出错，直接结束并告知用户计划存储位置
+    timings.userInteractionEnd = getCurrentTime()
+    await appendStep(taskName, 4, '用户决策', 'Current', getCurrentTime(), getCurrentTime(), 'skipped')
+    await finalizeAndReturn(taskName, planPath, stepStartTime, timings, interactionStart, parallelResults, subAgentsToCall, subAgentSelection, '跳过审查并结束')
+    return { planPath, sessionIds, subAgentSelection }
+  }
+
+  // ============ STEP 5: Momus 审查 ============
+  const momusStart = getCurrentTime()
+  timings.momusStart = momusStart
+
+  // ⚠️ 注意：Momus 必须在当前 session 执行，不使用 Task 工具
+  // Momus 审查应该由当前 Agent 直接完成
+  const momusOutput = `# Momus Review\n\n[进行计划审查...]\n\n计划路径: ${planPath}`
+
+  // 保存 Momus 输出（使用 current-session 作为 session_id）
+  momusSessionId = 'current-session'
+  const momusFilePath = await saveAgentOutput(taskName, 'momus', momusSessionId, momusOutput)
+  await appendStep(taskName, 5, 'Momus 审查', 'Current', momusStart, getCurrentTime(), 'completed', momusFilePath)
+  timings.momusEnd = getCurrentTime()
+
+  // Momus 审查完成后，直接结束并告知用户计划存储位置
+  await finalizeAndReturn(taskName, planPath, stepStartTime, timings, interactionStart, parallelResults, subAgentsToCall, subAgentSelection, userDecision)
+  return { planPath, sessionIds, subAgentSelection }
+
+  // 辅助函数：Finalize 并返回
+  async function finalizeAndReturn(taskName, planPath, stepStartTime, timings, interactionStart, parallelResults, subAgentsToCall, subAgentSelection) {
+    const finalizeStart = getCurrentTime()
+
+    // 计算各阶段耗时
+    const initDuration = calculateDuration(timings.initStart, timings.initEnd)
+    const metisDuration = calculateDuration(timings.metisStart, timings.metisEnd)
+    const parallelDuration = parallelResults.length > 0 ? calculateDuration(timings.parallelStart, timings.parallelEnd) : '0s'
+    const planDuration = calculateDuration(timings.planStart, timings.planEnd)
+    const initMs = calculateDurationMs(timings.initStart, timings.initEnd)
+    const metisMs = calculateDurationMs(timings.metisStart, timings.metisEnd)
+    const parallelMs = parallelResults.length > 0 ? calculateDurationMs(timings.parallelStart, timings.parallelEnd) : 0
+    const planMs = calculateDurationMs(timings.planStart, timings.planEnd)
+
+    // 计算顺序执行的总时间（用于并行效率分析）
+    const seqTotalMs = parallelResults.length > 0
+      ? parallelResults.reduce((sum, r) => sum + calculateDurationMs(r.agentStart, r.agentEnd), 0)
+      : 0
+
+    // 计算文件系统时间与调用时间的差异
+    const fileSystemSyncNotes = `
 ## 时间戳同步说明
 
 **实际执行时间 vs 文件记录时间**：
@@ -1155,20 +1222,19 @@ async function orchestrateWorkPlan(taskName, userRequest, complexity, sessionStr
 
 **文件时间**列用于验证记录的准确性。如果文件时间与调用时间差异过大（> 10s），可能存在时间同步问题。
 `
-  
-  // 读取 steps.md 并准备更新内容
-  const finalStepsContent = await read({ filePath: stepsPath })
-  
-  // 在所有操作完成后，再计算总耗时（使用当前时间作为最终结束时间）
-  const finalizeEnd = getCurrentTime()
-  const totalDuration = calculateDuration(stepStartTime, finalizeEnd)
-  const totalSessionDuration = calculateDuration(userInteractionStart, finalizeEnd)
-  const totalMs = calculateDurationMs(stepStartTime, finalizeEnd)
-  
-  const totalTimeSection = `
+
+    // 读取 steps.md 并准备更新内容
+    const stepsPath = `.plans/${taskName}/steps.md`
+    const finalStepsContent = await read({ filePath: stepsPath })
+
+    // 计算总耗时
+    const finalizeEnd = getCurrentTime()
+    const totalDuration = calculateDuration(stepStartTime, finalizeEnd)
+    const totalMs = calculateDurationMs(stepStartTime, finalizeEnd)
+
+    const totalTimeSection = `
 ## 总耗时
 
-**Agent 会话时间**: ${totalSessionDuration}（从第一个 Agent 开始到最后一个 Agent 完成）
 **文件记录时间**: ${totalDuration}（从目录创建到计划文件写入完成）
 
 ## 耗时分解
@@ -1180,15 +1246,13 @@ async function orchestrateWorkPlan(taskName, userRequest, complexity, sessionStr
 | Sub-Agent 选择 | ${calculateDuration(interactionStart, interactionEnd)} | - | 用户决策等待时间 |
 | Sub-Agent 调用 | ${parallelDuration} | ${totalMs > 0 ? Math.round((parallelMs / totalMs) * 100) : 0}% | 并行调用 ${subAgentsToCall.length || 0} 个 Sub-Agent（${subAgentSelection.mode || 'none'}） |
 | 计划生成 | ${planDuration} | ${totalMs > 0 ? Math.round((planMs / totalMs) * 100) : 0}% | 综合输出生成工作计划 |
+| 用户决策 | ${userDecision ? calculateDuration(userInteractionStart, userInteractionEnd) : '0s'} | - | Momus 审查和其他用户决策 |
 | Momus 审查 | ${timings.momusEnd ? calculateDuration(timings.momusStart, timings.momusEnd) : '0s'} | - | 计划可执行性验证 |
-| 用户决策 | ${timings.userDecisionEnd ? calculateDuration(timings.userDecisionStart, timings.userDecisionEnd) : '0s'} | - | 执行验证命令决策 |
-| Finalize | ${calculateDuration(finalizeStart, finalizeEnd)} | - | 清理和汇总 |
 
 ${fileSystemSyncNotes}
 
 **说明**：
 - 总耗时包括所有阶段的时间，包括用户交互等待时间
-- Agent 会话时间：从第一个 Agent 开始到最后一个 Agent 完成
 - 文件记录时间：从目录创建到计划文件写入完成
 - 并行执行效率：相比顺序执行，节省约 ${parallelMs > 0 && seqTotalMs > 0 ? Math.round((1 - parallelMs / seqTotalMs) * 100) : 0}% 时间
   - 顺序执行总时间：${seqTotalMs > 0 ? Math.round(seqTotalMs / 1000) + 's' : '0s'}
@@ -1196,13 +1260,18 @@ ${fileSystemSyncNotes}
   - 节省时间：${seqTotalMs > 0 && parallelMs > 0 ? Math.round((seqTotalMs - parallelMs) / 1000) + 's' : '0s'}
 - 如果文件时间与调用时间差异过大（> 10s），请检查系统时钟或网络连接
 `
-  
-  await write({ content: finalStepsContent.content + totalTimeSection, filePath: stepsPath })
-  
-  const stepNumber = 9  // 0(初始化) + 1(Metis) + 1.5(Sub-Agent 选择) + 4(并行调用) + 1(计划生成) + 1(Momus) + 1(用户决策)
-  await appendStep(taskName, stepNumber, 'Finalize', 'Current', finalizeStart, finalizeEnd, 'completed', stepsPath)
-  
-  return { planPath, sessionIds, subAgentSelection }
+
+    await write({ content: finalStepsContent.content + totalTimeSection, filePath: stepsPath })
+
+    const stepNumber = 6  // 0(初始化) + 1(Metis) + 1.5(Sub-Agent 选择) + 并行调用 + 1(计划生成) + 1(用户决策) + 1(Momus)
+    await appendStep(taskName, stepNumber, 'Finalize', 'Current', finalizeStart, finalizeEnd, 'completed', stepsPath)
+
+    // 返回计划存储位置
+    return {
+      planPath: planPath,
+      message: `✅ 工作计划已生成并保存到: ${planPath}`
+    }
+  }
 }
 
 function generatePlanFromOutputs(taskName, userRequest, metisOutput, parallelResults, metisAnalysis) {
@@ -1290,10 +1359,11 @@ ${subAgentContributions}
   - Force All: 强制调用所有 Sub-Agent
 - 根据用户选择决定要调用的 Sub-Agent 列表
 
-**STEP 2: 并行 Sub-Agent 调用（动态）**
+**STEP 2: 基于实际场景并行/串行调用 Sub-Agents**
+- 根据任务复杂度和依赖关系决定并行或串行调用
 - **只调用用户选择的 Sub-Agent**（不再硬编码）
 - 根据 session 策略决定是否使用子 session（Complex/Moderate 使用子 session）
-- 并行调用用户选择的 Sub-Agent（可能有 0-4 个）
+- **按需更新** todoWrite 状态：pending → in_progress → completed
 - **修复时间计算**: 每个 Sub-Agent 完成时立即记录结束时间
 - 每个调用使用超时保护
 
@@ -1302,15 +1372,20 @@ ${subAgentContributions}
 - 生成结构化计划到 `.plans/{task-name}/v{major}.{minor}.{patch}-{timestamp}.md`
 - 在计划中包含意图分析、Sub-Agent 选择模式等信息
 
-**STEP 4: 用户决策 + Momus 审查**
-- 使用 `question` 询问是否需要 Momus 审查
-- 如果需要，调用 Momus 验证计划可执行性
-- 如果 Momus 发现问题，直接修复
+**STEP 4: 用户决策（综合决策）**
+- 使用 `question` 询问用户：
+  - 是否需要 Momus 审查
+  - 其他用户决策（如是否修改计划、是否结束等）
+- 根据用户选择决定后续步骤：
+  - 选择"需要 Momus 审查"：进入 Step 5 执行 Momus 审查
+  - 选择"跳过审查并结束"：立即结束并告知用户计划存储位置
+  - 其他决策选项：根据用户选择处理
 
-**STEP 5: Finalize**
-- 清理草稿文件
-- 更新 steps.md 汇总信息
-- **新增**: 详细的耗时分解表（初始化、Metis、Sub-Agent、计划生成）
+**STEP 5: Momus 审查**（仅当用户选择"需要审查"时执行）
+- 调用 Momus 验证计划可执行性
+- Momus 审查完成后，结束并告知用户计划存储位置
+
+**注意**：Momus 审查完成后不进入 Finalize 步骤，直接结束
 
 ### Sub-Agent 调用格式
 
