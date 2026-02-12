@@ -196,11 +196,12 @@ question({
 ### 步骤流程
 
 **STEP 1: 初始化 + Metis**
-- 调用 Metis 进行意图分类、gap识别、推荐Sub-Agent
+- 调用 Metis 进行意图分类、gap识别
 - 记录输出、更新 todo 状态
 
 **STEP 2: Skills Advisor**
 - Skills检索：适合任务和Sub-Agent的skills
+- 强制Current Session
 
 **STEP 3: 并行 Sub-Agent 调用**
 - 根据 session 策略决定是否使用子 session
@@ -247,7 +248,7 @@ await Task({
 
 | Agent | 超时时间（分钟） |
 |-------|----------------|
-| Metis | 2 |
+| Metis | 3 |
 | Skills Advisor | 2 |
 | Explore | 3 |
 | Librarian | 5 |
