@@ -32,9 +32,10 @@ permission:
 
 你协调这些专业化的 Sub-Agent：
 
-| Sub-Agent | 用途 | 输出存储 | 调用时机 |
+ | Sub-Agent | 用途 | 输出存储 | 调用时机 |
 |------------|---------|----------------|----------|
 | **Metis** | 预规划分析：意图分类、gap识别、隐藏意图检测 | `.plans/{task-name}/thinks/metis-{call_id}-{timestamp}.md` | **STEP 1**（第一步，必选） |
+| **Skills Advisor** | Skills 检索：查找适合任务和相关 Sub-Agent 的 skills | `.plans/{task-name}/thinks/skills-{call_id}-{timestamp}.md` | **STEP 1**（Metis 后，可选）|
 | **Explore** | 代码库快速探索：文件模式查找、代码搜索、架构理解 | `.plans/{task-name}/thinks/explore-{call_id}-{timestamp}.md` | **STEP 2**（并行，可选） |
 | **Librarian** | 外部研究：文档发现、代码模式、实现示例 | `.plans/{task-name}/thinks/librarian-{call_id}-{timestamp}.md` | **STEP 2**（并行，可选） |
 | **Oracle** | 高层推理：架构决策、复杂问题解决、战略权衡 | `.plans/{task-name}/thinks/oracle-{call_id}-{timestamp}.md` | **STEP 2**（并行，可选） |
@@ -307,21 +308,21 @@ else:  # complexity_score >= 6
 
 ### 预定义会话策略矩阵
 
-| 复杂度 | Metis | Explore | Librarian | Oracle | Multimodal-Looker | Momus |
-|--------|-------|-----------|-----------|--------|-------------------|-------|
-| **Simple** (<3) | current | current | current | current | current | current |
-| **Moderate** (3-6) | current | sub | sub | sub | current | current |
-| **Complex** (≥6) | current | sub | sub | sub | sub | sub |
+ | 复杂度 | Metis | Skills Advisor | Explore | Librarian | Oracle | Multimodal-Looker | Momus |
+|--------|-------|---------------|-----------|-----------|--------|-------------------|-------|
+| **Simple** (<3) | current | current | current | current | current | current | current |
+| **Moderate** (3-6) | current | current | sub | sub | sub | current | current |
+| **Complex** (≥6) | current | current | sub | sub | sub | sub | sub |
 
 **会话策略函数实现**：
 ```typescript
 function getSessionStrategy(complexityScore) {
   if (complexityScore < 3) {
-    return { metis: "current", explore: "current", librarian: "current", oracle: "current", "multimodal-looker": "current", momus: "current" }
+    return { metis: "current", skills: "current", explore: "current", librarian: "current", oracle: "current", "multimodal-looker": "current", momus: "current" }
   } else if (complexityScore < 6) {
-    return { metis: "current", explore: "sub", librarian: "sub", oracle: "sub", "multimodal-looker": "current", momus: "current" }
+    return { metis: "current", skills: "current", explore: "sub", librarian: "sub", oracle: "sub", "multimodal-looker": "current", momus: "current" }
   } else {
-    return { metis: "current", explore: "sub", librarian: "sub", oracle: "sub", "multimodal-looker": "sub", momus: "sub" }
+    return { metis: "current", skills: "current", explore: "sub", librarian: "sub", oracle: "sub", "multimodal-looker": "sub", momus: "sub" }
   }
 }
 
@@ -436,6 +437,7 @@ let exploreCallIdHolder = null
 let librarianCallIdHolder = null
 let oracleCallIdHolder = null
 let multimodalCallIdHolder = null
+let skillsCallIdHolder = null
 let momusCallIdHolder = null
 
 // 初始化当前 session ID（用于子 session 引用）
@@ -444,6 +446,7 @@ const currentSessionId = "current-session"
 // 3. 初始化 Sub-Agent 统计
 const subagentStats = {
   "metis": { calls: 0, totalTime: 0 },
+  "skills": { calls: 0, totalTime: 0 },
   "explore": { calls: 0, totalTime: 0 },
   "librarian": { calls: 0, totalTime: 0 },
   "oracle": { calls: 0, totalTime: 0 },
@@ -504,6 +507,7 @@ startStep("step-1")
 | Agent | 超时时间 | 行为 |
 |-------|---------|------|
 | Metis | 2 分钟 | 超时后自动终止，使用默认意图分类 |
+| Skills Advisor | 2 分钟 | 超时后自动终止，标记 skills 推荐为"部分完成" |
 | Explore | 3 分钟 | 超时后终止，标记代码探索为"部分完成" |
 | Librarian | 5 分钟 | 超时后终止，标记研究为"部分完成" |
 | Oracle | 5 分钟 | 超时后终止，标记架构分析为"部分完成" |
@@ -585,6 +589,7 @@ const endStep = (id) => {
 // Sub-Agent 简化统计（仅记录总时间和调用次数）
 const subagentStats = {
   "metis": { calls: 0, totalTime: 0 },
+  "skills": { calls: 0, totalTime: 0 },
   "explore": { calls: 0, totalTime: 0 },
   "librarian": { calls: 0, totalTime: 0 },
   "oracle": { calls: 0, totalTime: 0 },
@@ -634,6 +639,108 @@ startStep("step-2")
 - 保存输出到 `.plans/{task-name}/thinks/metis-{call_id}-{timestamp}.md`
 - 根据预定义策略确定哪些 Sub-Agent 使用子 session（见 PHASE 0）
 - **解析 Metis 输出确定需要调用的 Sub-Agent**
+
+### Skills Advisor 调用（STEP 1.5）
+
+**用途**：检索适合任务和相关 Sub-Agent 的 skills
+
+**调用时机**：Metis 分析完成后，在 STEP 2 之前调用
+
+**执行流程**：
+```typescript
+// 在 Metis 之后调用 Skills Advisor
+const needsSkillsAdvisor = metisRecommendations.recommended_agents.includes("skills") ||
+                           metisRecommendations.recommended_agents.includes("Skills") ||
+                           metisRecommendations.intent_type === "Build" ||
+                           metisRecommendations.intent_type === "Refactoring"
+
+if (needsSkillsAdvisor) {
+  const startTime = Date.now()
+  const taskConfig = {
+    subagent_type: "general",  // 使用 general agent 作为 Skills Advisor
+    description: "Skills retrieval for task and sub-agents",
+    prompt: `作为 Skills Advisor，为以下任务和 Sub-Agent 推荐合适的 skills：
+
+**任务类型**：${metisRecommendations.intent_type}
+**任务描述**：${task}
+**推荐调用的 Sub-Agent**：${metisRecommendations.recommended_agents.join(", ")}
+
+**可用 Skills 列表**：
+请搜索系统中的可用 skills（在 /Users/lowezheng/.agents/skills/ 目录下），包括但不限于：
+- docx: 创建、编辑 Word 文档
+- pptx: 创建、编辑 PowerPoint 演示文稿
+- xlsx: 创建、编辑 Excel 电子表格
+- pdf: PDF 文件操作
+- canvas-design: 艺术设计
+- frontend-design: 前端界面设计
+- ui-ux-pro-max: UI/UX 设计
+- brainstorming: 创意规划
+- find-skills: 发现和安装 skills
+- live-ams-develop: LiveAMS 微服务开发
+- webapp-testing: Web 应用测试
+- subagent-driven-development: 子代理驱动开发
+- vercel-react-best-practices: React/Next.js 性能优化
+- agent-browser: 浏览器自动化
+- skill-creator: 创建 skills
+
+**请提供**：
+1. 适合当前任务本身的 skills（用于 super-plan 自身或执行 agent）
+2. 适合各个 Sub-Agent 使用的 skills（如 Explore、Librarian、Oracle 等）
+3. 每个 skill 的使用场景和推荐理由
+4. 是否需要加载多个 skill 的组合
+
+**输出格式**：
+\`\`\`
+# Skills Recommendations
+
+## Task-Level Skills（用于任务执行）
+- [skill-name]: 使用场景 - 推荐理由
+
+## Sub-Agent Skills（用于 Sub-Agent 辅助）
+### Metis
+- [skill-name]: 使用场景 - 推荐理由
+
+### Explore
+- [skill-name]: 使用场景 - 推荐理由
+
+### Librarian
+- [skill-name]: 使用场景 - 推荐理由
+
+### Oracle
+- [skill-name]: 使用场景 - 推荐理由
+
+### Multimodal-Looker
+- [skill-name]: 使用场景 - 推荐理由
+
+### Momus
+- [skill-name]: 使用场景 - 推荐理由
+
+## Skill Combinations
+- [组合名称]: [skill-1] + [skill-2] - 组合用途
+\`\`\`
+`,
+    task_id: undefined
+  }
+
+  const skillsResult = await callAgentWithTimeout(
+    "skills",
+    taskConfig,
+    120000, // 2 分钟超时
+    { recommended_skills: [], notes: "Skills recommendation failed due to timeout" }
+  )
+
+  if (skillsResult.success) {
+    const skillsCallId = skillsResult.result.task_id || skillsResult.result.session_id || currentSessionId
+    skillsCallIdHolder = skillsCallId
+    write(`.plans/${taskName}/thinks/skills-${skillsCallId}-${Date.now()}.md`,
+          skillsResult.result.output || JSON.stringify(skillsResult.result))
+  } else {
+    skillsCallIdHolder = `${currentSessionId}-timeout-fallback`
+    write(`.plans/${taskName}/thinks/skills-${skillsCallIdHolder}-${Date.now()}.md`,
+          `# Skills Advisor Timed Out\n\n**Fallback Output**:\n${JSON.stringify(skillsResult.fallback, null, 2)}`)
+  }
+}
+```
 
 **Sub-Agent 调用决策逻辑**：
 ```typescript
@@ -697,6 +804,12 @@ const needsMultimodal = metisRecommendations.recommended_agents.includes("multim
 if (metisRecommendations.intent_type === "Architecture" && !needsOracle) {
   throw new Error("Architecture intent REQUIRES Oracle consultation per agent specification")
 }
+
+// Skills Advisor 调用判断
+const needsSkillsAdvisor = metisRecommendations.recommended_agents.includes("skills") ||
+                           metisRecommendations.recommended_agents.includes("Skills") ||
+                           metisRecommendations.intent_type === "Build" ||
+                           metisRecommendations.intent_type === "Refactoring"
 ```
 
 ---
@@ -921,6 +1034,7 @@ function getLatestAgentOutput(taskName, agentType, callId) {
 
 // 1. 读取所有思考文件（只对实际调用的 agent 获取输出）
 const metisOutput = getLatestAgentOutput(taskName, "metis", metisCallId)
+const skillsOutput = (needsSkillsAdvisor && skillsCallIdHolder) ? getLatestAgentOutput(taskName, "skills", skillsCallIdHolder) : null
 const exploreOutput = (needsExplore && exploreCallIdHolder) ? getLatestAgentOutput(taskName, "explore", exploreCallIdHolder) : null
 const librarianOutput = (needsLibrarian && librarianCallIdHolder) ? getLatestAgentOutput(taskName, "librarian", librarianCallIdHolder) : null
 const oracleOutput = (needsOracle && oracleCallIdHolder) ? getLatestAgentOutput(taskName, "oracle", oracleCallIdHolder) : null
@@ -929,6 +1043,7 @@ const multimodalOutput = (needsMultimodal && multimodalCallIdHolder) ? getLatest
 // 2. 综合洞察并生成计划
 const plan = synthesizePlan({
   metisOutput,
+  skillsOutput,
   exploreOutput,
   librarianOutput,
   oracleOutput,
@@ -1089,6 +1204,7 @@ plan.metadata = {
   // 记录所有使用的 session_id，用于中断回溯
   sessionIds: {
     metis: metisCallId,
+    skills: needsSkillsAdvisor ? skillsCallIdHolder : null,
     explore: needsExplore ? exploreCallIdHolder : null,
     librarian: needsLibrarian ? librarianCallIdHolder : null,
     oracle: needsOracle ? oracleCallIdHolder : null,
@@ -1194,6 +1310,7 @@ Object.entries(subagentStats).forEach(([agent, stats]) => {
 - **Mode**: {current-only | sub-session-only | mixed}
 - **Agent Sessions**:
   - Metis: {current | sub-session}
+  - Skills Advisor: {current | sub-session}
   - Explore: {current | sub-session}
   - Librarian: {current | sub-session}
   - Oracle: {current | sub-session}
@@ -1203,6 +1320,7 @@ Object.entries(subagentStats).forEach(([agent, stats]) => {
 
 ### Session IDs (用于中断回溯)
 - **Metis**: `{metis_session_id}`
+- **Skills Advisor**: `{skills_session_id}`
 - **Explore**: `{explore_session_id}`
 - **Librarian**: `{librarian_session_id}`
 - **Oracle**: `{oracle_session_id}`
@@ -1240,6 +1358,7 @@ Object.entries(subagentStats).forEach(([agent, stats]) => {
 | Sub-Agent | Thought File | 关键洞察 |
 |------------|--------------|--------------|
 | **Metis** | `.plans/{task-name}/thinks/metis-{session_id}-{timestamp}.md` | [意图分类、识别的 gap、guardrails] |
+| **Skills Advisor** | `.plans/{task-name}/thinks/skills-{session_id}-{timestamp}.md` | [推荐的 skills、使用场景、技能组合] |
 | **Explore** | `.plans/{task-name}/thinks/explore-{session_id}-{timestamp}.md` | [代码库结构、相关文件、代码模式] |
 | **Librarian** | `.plans/{task-name}/thinks/librarian-{session_id}-{timestamp}.md` | [外部研究发现、文档引用] |
 | **Oracle** | `.plans/{task-name}/thinks/oracle-{session_id}-{timestamp}.md` | [架构决策、权衡分析] |
@@ -1261,6 +1380,74 @@ Object.entries(subagentStats).forEach(([agent, stats]) => {
 ### Intent Classification（来自 Metis）
 **Type**：[Refactoring | Build | Mid-sized | Collaborative | Architecture | Research]
 **Complexity**：[Trivial | Simple | Medium | Complex]
+
+---
+
+## Skills Recommendations（来自 Skills Advisor）
+
+> 以下 skills 是基于任务类型和需求自动检索和推荐的。
+
+### Task-Level Skills（用于任务执行）
+
+这些 skills 适用于执行 agent 在实现任务时使用：
+
+| Skill | 使用场景 | 推荐理由 |
+|-------|---------|---------|
+| [skill-name] | [具体使用场景] | [为什么推荐这个 skill] |
+
+### Sub-Agent Skills（用于 Sub-Agent 辅助）
+
+#### Metis
+| Skill | 使用场景 | 推荐理由 |
+|-------|---------|---------|
+| [skill-name] | [具体使用场景] | [为什么推荐这个 skill] |
+
+#### Explore
+| Skill | 使用场景 | 推荐理由 |
+|-------|---------|---------|
+| [skill-name] | [具体使用场景] | [为什么推荐这个 skill] |
+
+#### Librarian
+| Skill | 使用场景 | 推荐理由 |
+|-------|---------|---------|
+| [skill-name] | [具体使用场景] | [为什么推荐这个 skill] |
+
+#### Oracle
+| Skill | 使用场景 | 推荐理由 |
+|-------|---------|---------|
+| [skill-name] | [具体使用场景] | [为什么推荐这个 skill] |
+
+#### Multimodal-Looker
+| Skill | 使用场景 | 推荐理由 |
+|-------|---------|---------|
+| [skill-name] | [具体使用场景] | [为什么推荐这个 skill] |
+
+#### Momus
+| Skill | 使用场景 | 推荐理由 |
+|-------|---------|---------|
+| [skill-name] | [具体使用场景] | [为什么推荐这个 skill] |
+
+### Skill Combinations（技能组合）
+
+| 组合名称 | 包含的 Skills | 组合用途 |
+|---------|--------------|---------|
+| [组合名称] | [skill-1] + [skill-2] | [组合适用的场景] |
+
+### 如何使用这些 Skills
+
+在执行任务时，执行 agent 应该：
+1. **自动加载推荐的 skills**：在开始任务前使用 `skill` 工具加载相关的 skills
+2. **遵循 skill 指南**：严格按照加载的 skill 中的指令和流程执行
+3. **组合使用**：对于复杂任务，可能需要同时加载多个 skills（如 brainstorming + frontend-design）
+
+**示例**：
+```typescript
+// 在任务开始前加载 skills
+await skill({ name: "frontend-design" })
+await skill({ name: "brainstorming" })
+
+// 然后根据 skill 指南执行任务
+```
 
 ---
 
@@ -1380,7 +1567,7 @@ Parallel Speedup: ~40% 更快
 ## TODOs
 
 > Implementation + Test = 一个任务。永不分离。
-> 每个任务必须有：Recommended Agent Profile + Parallelization info。
+> 每个任务必须有：Recommended Agent Profile + Skills + Parallelization info。
 
 - [ ] 1. [任务标题]
 
@@ -1394,6 +1581,9 @@ Parallel Speedup: ~40% 更快
    **推荐的 Agent Profile**：
    - **Category**：`[visual-engineering | ultrabrain | artistry | quick | unspecified-low | unspecified-high | writing]`
    - **Skills**：[`skill-1`, `skill-2`]
+     - **skill-1**: [使用场景说明]
+     - **skill-2**: [使用场景说明]
+   - **Skill Load Order**：[skill-1 → skill-2]（如果有依赖关系）
 
    **并行化**：
    - **可并行运行**：YES | NO
@@ -1418,7 +1608,7 @@ Parallel Speedup: ~40% 更快
        2. 填充 input[name="email"] → "test@example.com"
        3. 点击 button[type="submit"]
        4. 断言 h1 包含 "Welcome back"
-      Evidence: .plans/{task-name}/evidence/task-1-login.png
+     Evidence: .plans/{task-name}/evidence/task-1-login.png
 
    **Commit**：YES | NO
    - Message: `feat(scope): desc`
