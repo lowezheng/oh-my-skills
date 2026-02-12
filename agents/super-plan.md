@@ -32,13 +32,34 @@ permission:
 | Sub-Agent | 用途 | 输出存储 | 调用时机 |
 |-----------|------|-----------|----------|
 | **Metis** | 预规划分析、意图分类、gap识别 | `.plans/{task-name}/thinks/metis-{session_id}-{timestamp}.md` | **STEP 1**（必选）|
-| **Explore** | 代码库快速探索、文件模式查找 | `.plans/{task-name}/thinks/explore-{session_id}-{timestamp}.md` | **STEP 2**（并行）|
-| **Librarian** | 外部研究、文档发现、代码模式 | `.plans/{task-name}/thinks/librarian-{session_id}-{timestamp}.md` | **STEP 2**（并行）|
-| **Oracle** | 高层推理、架构决策、战略权衡 | `.plans/{task-name}/thinks/oracle-{session_id}-{timestamp}.md` | **STEP 2**（并行）|
-| **Multimodal-Looker** | 媒体分析：PDF、图片、图表 | `.plans/{task-name}/thinks/multimodal-looker-{session_id}-{timestamp}.md` | **STEP 2**（并行）|
+| **Explore** | 代码库快速探索、文件模式查找；优先读取目标目录 AGENTS.md | `.plans/{task-name}/thinks/explore-{session_id}-{timestamp}.md` | **STEP 2**（核心，优先级最高）|
+| **Librarian** | 外部研究、文档发现、代码模式 | `.plans/{task-name}/thinks/librarian-{session_id}-{timestamp}.md` | Explore 信息不足时触发 |
+| **Oracle** | 高层推理、架构决策、战略权衡 | `.plans/{task-name}/thinks/oracle-{session_id}-{timestamp}.md` | 中等/复杂任务触发 |
+| **Multimodal-Looker** | 媒体分析：PDF、图片、图表 | `.plans/{task-name}/thinks/multimodal-looker-{session_id}-{timestamp}.md` | 仅当意图识别为多媒体分析时触发 |
 | **Momus** | 计划审查：可执行性验证、阻塞检测 | `.plans/{task-name}/thinks/momus-{session_id}-{timestamp}.md` | **STEP 3**（计划生成后）|
 
 **⚠️ Momus 调用约束**：禁止在计划生成前调用 Momus 进行任务分解或创建。
+
+### Sub-Agent 调用规则（基于复杂度）
+
+| 复杂度分类 | Explore | Librarian | Oracle | Multimodal-Looker | 触发条件 |
+|-----------|---------|-----------|--------|-------------------|---------|
+| **简单任务** (score < 3) | ⚠️ 条件触发 | ⚠️ 条件触发 | ❌ 不触发 | ⚠️ 意图触发 | Explore 信息不足时触发 Librarian |
+| **中等任务** (3 ≤ score < 6) | ✅ 必需 | ⚠️ 条件触发 | ⚠️ 可选 | ⚠️ 意图触发 | Explore 信息不足 → Librarian；必要时触发 Oracle 分析 Librarian 输出 |
+| **复杂任务** (score ≥ 6) | ✅ 必需 | ⚠️ 条件触发 | ✅ 必需 | ⚠️ 意图触发 | Explore 信息不足 → Librarian；Oracle 分析 Librarian 输出 |
+
+**Explore 任务特殊规则**：
+- 执行探索前，先检查目标文件所在目录是否存在 `AGENTS.md`
+- 如果存在，必须优先读取该文件以获取项目特定的代理配置和规则
+- 这确保了 Explore 子代理能够理解项目的特定上下文和约定
+
+**Librarian 触发条件**：
+- Explore 无法提供足够的信息（如：找不到相关文件、模式不匹配、需要外部最佳实践）
+- 用户显式请求外部研究
+
+**Multimodal-Looker 触发条件**：
+- 仅当 Metis 识别的意图为"多媒体分析"时才触发
+- 关键词：多媒体分析、分析 pdf、分析图片、图表、media analysis
 
 ---
 
@@ -190,7 +211,7 @@ complexity_score = num_subtasks * 1.0 + needs_research * 2.5
 
 **绝对规则**：
 - **Metis**: 必须在当前 session（**不使用** `task` 工具）
-- **Momus**: 必须在当前 session（**不使用** `task` 工具）
+- **Momus**: 必须在子 session（**使用** `task` 工具）
 - **其他 Sub-Agent**（Explore、Librarian、Oracle、Multimodal-Looker）: 根据策略决定
 
 ### Session 类型定义
@@ -1394,54 +1415,65 @@ await Task({
 
 ### 推荐的 Sub-Agent
 
-| 意图类型 | 推荐的 Sub-Agent | 理由 |
-|---------|-----------------|------|
-| 信息查询 | 无 | 简单信息查询，无需额外 Sub-Agent |
-| 代码实现 | Explore + Librarian | 需要探索代码库和外部研究最佳实践 |
-| 架构重构 | Explore + Oracle | 需要架构决策和代码探索 |
-| 新功能开发 | Explore + Librarian + Oracle | 全面分析新功能实现 |
-| Bug 修复 | Explore | 探索相关代码定位问题 |
-| 性能优化 | Explore + Oracle | 分析性能瓶颈和架构优化 |
-| 媒体分析 | Multimodal-Looker | 需要分析媒体文件 |
-| 通用任务 | 全部 4 个 | 通用任务，调用全部 Sub-Agent |
+| 意图类型 | 核心探索 | 条件触发 | Oracle | Multimodal | 理由 |
+|---------|---------|---------|--------|-----------|------|
+| 信息查询 | Explore | Librarian | ❌ | ❌ | Explore 先尝试，不足时 Librarian |
+| 代码实现 | Explore | Librarian | ❌ | ❌ | Explore 探索代码库，不足时外部研究 |
+| 架构重构 | Explore | Librarian | ✅ | ❌ | 需要 Oracle 架构决策 |
+| 新功能开发 | Explore | Librarian | ✅ | ❌ | 全面分析新功能实现 |
+| Bug 修复 | Explore | ❌ | ❌ | ❌ | 仅 Explore 即可定位问题 |
+| 性能优化 | Explore | ❌ | ✅ | ❌ | Explore + Oracle 分析性能瓶颈 |
+| 媒体分析 | ❌ | ❌ | ❌ | ✅ | 仅 Multimodal-Looker |
+| 通用任务 | Explore | Librarian | ✅ | ⚠️ | 复杂任务全面分析 |
 
 ### 用户选择流程
 
 ```
-Metis 分析意图
+Metis 分析意图 + 复杂度评估
     ↓
-解析意图类型和推荐的 Sub-Agent
+解析意图类型和任务复杂度
     ↓
-使用 Question 工具询问用户
+确定核心 Sub-Agent（Explore 必需，Multimodal 意图触发）
     ↓
-用户选择：
-├─ Accept Recommended → 调用推荐的 Sub-Agent
-├─ Selective → 手动选择要调用的 Sub-Agent
-├─ Skip All → 跳过所有 Sub-Agent
-└─ Force All → 强制调用所有 4 个 Sub-Agent
+使用 Question 工具询问用户确认
     ↓
-动态生成 Sub-Agent 列表
+用户确认核心 Sub-Agent + 选择条件触发的 Sub-Agent
     ↓
-并行调用（如有）
+Explore 先执行（优先读取目标目录 AGENTS.md）
+    ↓
+判断 Explore 信息是否充足
+    ├─ 足够 → 跳过 Librarian，继续流程
+    └─ 不足 → 触发 Librarian
+    ↓
+中等/复杂任务 → Oracle 分析（分析 Librarian 输出）
+    ↓
+动态生成 Sub-Agent 调用计划
+    ↓
+按依赖关系顺序调用或并行调用
 ```
+
+**调用顺序说明**：
+
+1. **Explore（核心）**：
+   - 优先读取目标文件所在目录的 `AGENTS.md`（如果存在）
+   - 执行代码库探索和文件模式查找
+
+2. **Librarian（条件触发）**：
+   - 仅在 Explore 无法提供足够信息时触发
+   - 进行外部研究、文档发现
+
+3. **Oracle（复杂度触发）**：
+   - 中等/复杂任务触发
+   - 分析 Explore + Librarian（如有）的输出
+
+4. **Multimodal-Looker（意图触发）**：
+   - 仅当意图识别为"媒体分析"时触发
+   - 分析 PDF、图片、图表等媒体文件
 
 ---
 
 ## 常见错误和最佳实践
 
-### 关键修复记录
-
-| 版本 | 修复的问题 | 影响 |
-|------|----------|------|
-| v1.2.0 | ✅ 文件时间与调用时间不匹配 | 验证记录准确性 |
-| v1.2.0 | ✅ 缺少用户交互时间记录 | 完整耗时分析 |
-| v1.2.0 | ✅ 时间戳格式不直观 | 提高可读性 |
-| v1.1.0 | ✅ 并行 Sub-Agent 时间计算错误 | 步骤记录准确 |
-| v1.1.0 | ✅ 硬编码的 Sub-Agent 列表 | 动态选择，提高效率 |
-| v1.1.0 | ✅ 忽略 Metis 的 Sub-Agent 建议 | 基于意图智能推荐 |
-| v1.1.0 | ✅ 缺少基于意图的动态选择逻辑 | 核心功能实现 |
-| v1.1.0 | ✅ 总耗时计算不完整 | 详细耗时分解 |
-| v1.1.0 | ✅ Session 策略未实现 | 策略正确应用 |
 
 ### 错误示例
 
@@ -1645,6 +1677,22 @@ await Task({
     - 使用 getLocalTime() 转换为系统本地时区显示
     - 保留 UTC 时间戳用于精确计算
     - 提高可读性，便于理解
+15. **✅ Explore 任务优先读取 AGENTS.md**（v1.3.0）
+    - Explore 执行前，先检查目标文件所在目录是否存在 `AGENTS.md`
+    - 如果存在，必须优先读取该文件以获取项目特定的代理配置
+    - 这确保了 Explore 能够理解项目的特定上下文和约定
+16. **✅ 按复杂度和意图动态触发 Sub-Agent**（v1.3.0）
+    - 简单任务：Explore + 条件触发 Librarian
+    - 中等任务：Explore + 条件触发 Librarian + 可选 Oracle
+    - 复杂任务：Explore + 条件触发 Librarian + 必需 Oracle
+    - 媒体分析：仅触发 Multimodal-Looker
+17. **✅ Librarian 作为 Explore 的补充**（v1.3.0）
+    - Librarian 仅在 Explore 信息不足时触发
+    - 避免不必要的调用，提高效率
+    - Explore 结果传递给 Librarian 作为上下文
+18. **✅ Oracle 分析 Librarian 输出**（v1.3.0）
+    - 中等/复杂任务中，Oracle 分析 Explore + Librarian 的输出
+    - Oracle 不直接分析原始请求，而是分析探索结果
 
 ---
 
