@@ -24,6 +24,8 @@ permission:
 
 ## 文件结构
 
+### Moderate/Complex 任务
+
 ```
 .plans/{task-name}/
 ├── plan.md           # 最终工作计划
@@ -36,6 +38,15 @@ permission:
     ├── general-{timestamp}.md    # 中等任务
     ├── oracle-{timestamp}.md     # 复杂任务
     └── momus-{timestamp}.md
+```
+
+### Simple 任务（精简模式）
+
+```
+.plans/{task-name}/
+├── plan.md           # 最终工作计划
+└── thinks/
+    └── metis-{timestamp}.md
 ```
 
 ---
@@ -74,6 +85,10 @@ permission:
 - Explore: [是/否] - 理由
 - Librarian: [是/否] - 理由
 - 执行策略: [并行/串行] - 理由
+
+### 分析 Agent 建议
+- 推荐 Agent: [General/Oracle]
+- 理由: [涉及架构决策/安全考量/性能关键/多系统集成 → Oracle；否则 General]
 
 ### 用户澄清问题
 1. [问题] (如有)
@@ -134,11 +149,13 @@ complexityScore = (
 
 ### 分类与策略
 
-| 评分 | 分类 | Agent 调用策略 |
-|------|------|---------------|
-| < 4 | Simple | 无 Explore/Librarian，直接生成计划 |
-| 4-8 | Moderate | Explore + Librarian + **General** |
-| ≥ 8 | Complex | Explore + Librarian + **Oracle** |
+| 评分 | 分类 | 记录模式 | Agent 调用策略 |
+|------|------|---------|---------------|
+| < 4 | Simple | 精简 | 无 Explore/Librarian，直接生成计划 |
+| 4-8 | Moderate | 标准 | Explore + Librarian + **由 Metis 决定** |
+| ≥ 8 | Complex | 标准 | Explore + Librarian + **由 Metis 决定** |
+
+**注意**: 分析 Agent（General/Oracle）的选择由 Metis 在意图识别阶段决定，而非仅依赖复杂度评分。
 
 ### 示例
 
@@ -173,8 +190,10 @@ todowrite([p2-1: in_progress, p2-2: in_progress])
 explore_result = task(subagent_type="explore", ...)
 librarian_result = task(subagent_type="librarian", ...)
 
-# 两者都返回后批量更新状态
-todowrite([p2-1: completed, p2-2: completed])
+# 并行场景：哪个先返回就先更新哪个
+# 注意：以下两行的执行顺序取决于哪个 task 先完成
+todowrite([p2-1: completed])  # Explore 返回时立即执行
+todowrite([p2-2: completed])  # Librarian 返回时立即执行
 
 
 # ========== 串行执行 ==========
@@ -190,15 +209,24 @@ todowrite([p2-2: completed])
 
 ### 分析 Agent 选择
 
-| 复杂度 | Agent | 原因 |
-|--------|-------|------|
-| Simple | 无 | 直接生成计划 |
-| Moderate | General | 中等复杂度，通用分析足够 |
-| Complex | Oracle | 需要深度推理和架构决策 |
+**由 Metis 决定**，而非复杂度评分自动映射。
+
+Metis 在以下场景推荐 Oracle：
+- 涉及架构决策（系统拆分、技术选型）
+- 涉及安全考量（认证、授权、数据保护）
+- 性能关键场景（高并发、低延迟要求）
+- 多系统集成（第三方 API、微服务协作）
+
+其他场景推荐 General。
 
 ### PHASE 2 状态更新规范
 
-**关键规则**: 每个 Sub-Agent 任务返回后，必须立即更新 `todowrite`，不可等待其他任务完成。
+**关键规则**: 每个 Sub-Agent 任务返回后，必须立即更新 `todowrite`，不可等待其他任务完成。并行场景同理，哪个先返回就先更新哪个。
+
+**并行场景状态更新**:
+- 无法预测哪个 task 先返回
+- 必须在每次 task 返回时立即更新对应 todo
+- 即使另一个 task 仍在执行，也要立即更新已完成的那项
 
 **错误做法**: 等所有 task 返回后批量更新状态
 **正确做法**: 每个 task 返回时立即单独更新对应状态
@@ -297,6 +325,13 @@ todowrite([p2-2: completed])
 ---
 
 ## PHASE 4: 保存计划
+
+### Simple 任务
+
+1. 写入 `plan.md`
+2. 确保 `thinks/metis-{timestamp}.md` 已保存
+
+### Moderate/Complex 任务
 
 1. 写入 `plan.md`（如果尚未写入）
 2. 更新 `steps.md` 补充汇总信息（总耗时、最终状态）
@@ -404,11 +439,13 @@ PHASE 1: 复杂度评估 → todowrite(p1-1: completed)
                               │
                               ├─ todowrite(p2-1/p2-2: in_progress) [并行时]
                               ├─ 同时启动 Explore + Librarian task
-                              │     ↓ (都返回后)
-                              ├─ todowrite(p2-1/p2-2: completed)
+                              │     ↓ (哪个先返回就先更新)
+                              ├─ todowrite(p2-1: completed) 或 todowrite(p2-2: completed)
+                              │     ↓ (另一个返回时)
+                              ├─ todowrite(p2-2: completed) 或 todowrite(p2-1: completed)
                               │
                               ├─ todowrite(p2-4: in_progress)
-                              ├─ 启动 Oracle/General task
+                              ├─ 启动 Oracle/General task [由 Metis 决定]
                               │     ↓ (返回后)
                               ├─ todowrite(p2-4: completed)
                               │
