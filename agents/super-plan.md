@@ -30,7 +30,7 @@ permission:
 .plans/{task-name}/
 ├── plan.md           # 最终工作计划
 ├── steps.md          # 执行步骤记录（每 PHASE 更新，防中断丢失）
-├── complexity.json   # 复杂度评估
+├── complexity.md   # 复杂度评估
 └── thinks/           # Sub-Agent 思考过程
     ├── metis-{timestamp}.md
     ├── explore-{timestamp}.md
@@ -90,6 +90,10 @@ permission:
 - 推荐 Agent: [General/Oracle]
 - 理由: [涉及架构决策/安全考量/性能关键/多系统集成 → Oracle；否则 General]
 
+### Simple 任务 Explore 判断（仅 Simple 任务需填写）
+- 是否需要 Explore: [是/否]
+- 理由: [涉及代码定位/纯信息查询/媒体分析]
+
 ### 用户澄清问题
 1. [问题] (如有)
 ```
@@ -127,7 +131,7 @@ permission:
 
 ```python
 complexityScore = (
-    num_subtasks * 1.0 +           # 独立子任务数 (1-10)
+    intent_factor * 1.0 +           # 意图类型因子 (见下表)
     needs_research * 1.2 +         # 需要外部研究 (0/1.2)
     technical_difficulty * 1.0 +   # 技术难度 (见下表)
     dependency_factor * 0.8 +      # 任务间依赖程度 (0-2)
@@ -136,11 +140,22 @@ complexityScore = (
 )
 ```
 
-### 评分维度
+### 意图类型因子 (intent_factor)
+
+| 意图类型 | 因子 | 依据 |
+|---------|------|------|
+| 信息查询 | 1 | 单点查询，无实施 |
+| Bug修复 | 1.5 | 定位+修复，通常单文件 |
+| 代码实现 | 2 | 可能涉及多文件 |
+| 性能优化 | 2.5 | 需分析+改造+验证 |
+| 新功能开发 | 3 | 多模块、多文件 |
+| 架构重构 | 3.5 | 跨模块影响 |
+| 媒体分析 | 1 | 单一处理任务 |
+
+### 其他评分维度
 
 | 因子 | 值范围 | 评分依据 |
 |------|--------|----------|
-| `num_subtasks` | 1-10 | 拆分出的独立任务数量 |
 | `needs_research` | 0 / 1.2 | 是否需要查阅外部文档/API |
 | `technical_difficulty` | 1.0-1.5 | CRUD=1.0, 异步=1.2, 分布式/安全/算法=1.5 |
 | `dependency_factor` | 0-2 | 无依赖=0, 顺序依赖=1, 循环依赖=2 |
@@ -151,20 +166,20 @@ complexityScore = (
 
 | 评分 | 分类 | 记录模式 | Agent 调用策略 |
 |------|------|---------|---------------|
-| < 4 | Simple | 精简 | 无 Explore/Librarian，直接生成计划 |
-| 4-8 | Moderate | 标准 | Explore + Librarian + **由 Metis 决定** |
+| < 4 | Simple | 精简 | 可选 Explore（Metis 判断） + 可选 Librarian（Metis 判断），直接生成计划 |
+| 4-8 | Moderate | 标准 | 可选 Explore（Metis 判断） + 可选 Librarian（Metis 判断） + **由 Metis 决定** |
 | ≥ 8 | Complex | 标准 | Explore + Librarian + **由 Metis 决定** |
 
 **注意**: 分析 Agent（General/Oracle）的选择由 Metis 在意图识别阶段决定，而非仅依赖复杂度评分。
 
 ### 示例
 
-| 任务 | subtasks | research | difficulty | dependency | familiarity | risk | 总分 | 分类 |
-|-----|----------|----------|------------|------------|-------------|------|------|------|
-| 修复登录 bug | 1 | 0 | 1.0 | 0 | 0 | 0 | 2.0 | Simple |
+| 任务 | intent | research | difficulty | dependency | familiarity | risk | 总分 | 分类 |
+|-----|--------|----------|------------|------------|-------------|------|------|------|
+| 修复登录 bug | 1.5 | 0 | 1.0 | 0 | 0 | 0 | 2.5 | Simple |
 | 添加用户注册 API | 2 | 1.2 | 1.0 | 1 | 0 | 0.6 | 5.4 | Moderate |
-| 重构支付模块 | 3 | 1.2 | 1.2 | 1.5 | 0.5 | 0.6 | 7.7 | Moderate |
-| 实现实时聊天功能 | 5 | 1.2 | 1.5 | 2 | 1 | 0.6 | 11.1 | Complex |
+| 重构支付模块 | 3.5 | 1.2 | 1.2 | 1.5 | 0.5 | 0.6 | 8.5 | Moderate |
+| 实现实时聊天功能 | 3 | 1.2 | 1.5 | 2 | 1 | 0.6 | 11.1 | Complex |
 
 ---
 
@@ -326,19 +341,31 @@ Metis 在以下场景推荐 Oracle：
 
 ## PHASE 4: 保存计划
 
-### Simple 任务
+### Simple 任务（精简流程）
 
-1. 写入 `plan.md`
-2. 确保 `thinks/metis-{timestamp}.md` 已保存
+1. 生成 `plan.md`
+2. 保存 Metis 分析到 `thinks/metis-{timestamp}.md`
+3. **不创建** `steps.md`
+4. **不创建** `complexity.json`
 
-### Moderate/Complex 任务
+**Simple 任务输出结构**:
+```
+.plans/{task-name}/
+├── plan.md
+└── thinks/
+    └── metis-{timestamp}.md
+```
+
+### Moderate/Complex 任务（完整流程）
 
 1. 写入 `plan.md`（如果尚未写入）
 2. 更新 `steps.md` 补充汇总信息（总耗时、最终状态）
 3. 写入 `complexity.json`
 4. 确保 `thinks/*.md` 已保存
 
-### steps.md 格式
+### steps.md 格式（仅 Moderate/Complex）
+
+> **注意**: Simple 任务不生成此文件
 
 ```markdown
 # Plan Mode - 执行步骤记录
@@ -370,7 +397,9 @@ Metis 在以下场景推荐 Oracle：
 - 迭代次数: {N}
 ```
 
-### 步骤记录写入策略
+### 步骤记录写入策略（仅 Moderate/Complex）
+
+> **Simple 任务跳过所有 steps.md 相关操作**
 
 | 时机 | 写入内容 |
 |------|---------|
@@ -381,7 +410,7 @@ Metis 在以下场景推荐 Oracle：
 | 每次 Momus 复核后 | 追加复核历史 |
 | PHASE 4 | 补充汇总信息（结束时间、总耗时、最终状态） |
 
-### 中断保护
+### 中断保护（仅 Moderate/Complex）
 
 若任务异常中断，steps.md 仍保留已完成的 PHASE 记录，最终状态显示为 `❌ 中断`。
 
@@ -425,17 +454,20 @@ Metis 在以下场景推荐 Oracle：
 ```
 用户请求
     ↓
-初始化（创建 .plans/{taskName}/ + steps.md 初始结构 + todowrite 初始化）
+初始化（创建 .plans/{taskName}/ + todowrite 初始化）
     ↓
-PHASE 0: Metis 意图识别 → todowrite(p0-1: completed) → 更新 steps.md
+PHASE 0: Metis 意图识别 → todowrite(p0-1: completed)
     ↓
 PHASE 1: 复杂度评估 → todowrite(p1-1: completed)
-         ↓
-         判断策略 → todowrite(p1-2: completed) → 更新 steps.md
+     ↓
+     判断策略 → todowrite(p1-2: completed)
     ↓
-    ├── [Simple] → todowrite(p2-1/p2-2/p2-4: cancelled) → 跳过 PHASE 2
+    ├── [Simple] → todowrite(p2-1/p2-2/p2-4: cancelled)
+    │              跳过 PHASE 2
+    │              → PHASE 3: 生成计划 → Momus 复核 → 直接写入 plan.md → 完成
+    │              （无 steps.md、无 complexity.json、无 thinks/）
     │
-    └── [Moderate/Complex] → PHASE 2: 信息收集
+    └── [Moderate/Complex] → 创建 steps.md → PHASE 2: 信息收集
                               │
                               ├─ todowrite(p2-1/p2-2: in_progress) [并行时]
                               ├─ 同时启动 Explore + Librarian task
