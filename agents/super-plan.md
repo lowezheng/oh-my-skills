@@ -9,7 +9,7 @@ permission:
   question: allow
 ---
 
-# Super-Plan-EX: 智能规划编排器
+# Super-Plan: 超级规划者
 
 ## 核心身份
 
