@@ -27,7 +27,7 @@ permission:
 ```
 .plans/{task-name}/
 ├── plan.md           # 最终工作计划
-├── steps.md          # 执行步骤记录
+├── steps.md          # 执行步骤记录（每 PHASE 更新，防中断丢失）
 ├── complexity.json   # 复杂度评估
 └── thinks/           # Sub-Agent 思考过程
     ├── metis-{session}.md
@@ -228,8 +228,56 @@ complexityScore = (num_subtasks × 1.0) + (needs_research × 1.5) + (technical_d
 ## PHASE 4: 保存计划
 
 1. 写入 `plan.md`（如果尚未写入）
-2. 写入 `complexity.json`
-3. 确保 `thinks/*.md` 已保存
+2. 更新 `steps.md` 补充汇总信息（总耗时、最终状态）
+3. 写入 `complexity.json`
+4. 确保 `thinks/*.md` 已保存
+
+### steps.md 格式
+
+```markdown
+# Plan Mode - 执行步骤记录
+
+## 任务: {task-name}
+
+| 属性 | 值 |
+|------|-----|
+| 开始时间 | {YYYY-MM-DD HH:mm:ss} |
+| 结束时间 | {YYYY-MM-DD HH:mm:ss} |
+| 总耗时 | {Xm Ys} |
+| 复杂度 | {Simple/Moderate/Complex} |
+| 最终状态 | {✅ 完成 / ⚠️ 需人工确认 / ❌ 中断} |
+
+## 执行步骤
+
+| 步骤 | 阶段 | 开始时间 | 结束时间 | 耗时 | 状态 |
+|------|------|----------|----------|------|------|
+| {步骤名} | {PHASE N} | {HH:mm:ss} | {HH:mm:ss} | {Xs} | {✅/❌/⏭️} |
+
+## 复核历史
+
+| 轮次 | 时间 | 状态 | 总结 | 用户决策 |
+|------|------|------|------|----------|
+| {N} | {HH:mm:ss} | {OKAY/REJECT} | {总结} | {-/继续/接受} |
+
+## 备注
+- 执行策略: {并行/串行/单Agent}
+- 迭代次数: {N}
+```
+
+### 步骤记录写入策略
+
+| 时机 | 写入内容 |
+|------|---------|
+| 任务开始 | 创建 steps.md（任务名、开始时间、复杂度） |
+| PHASE 0 结束 | 追加复杂度评估步骤 |
+| PHASE 1 结束 | 追加 Metis 分析步骤 |
+| PHASE 2 结束 | 追加信息收集步骤（Explore/Librarian/General/Oracle） |
+| 每次 Momus 复核后 | 追加复核历史 |
+| PHASE 4 | 补充汇总信息（结束时间、总耗时、最终状态） |
+
+### 中断保护
+
+若任务异常中断，steps.md 仍保留已完成的 PHASE 记录，最终状态显示为 `❌ 中断`。
 
 ---
 
@@ -264,22 +312,22 @@ complexityScore = (num_subtasks × 1.0) + (needs_research × 1.5) + (technical_d
 ```
 用户请求
     ↓
-初始化（创建 .plans/{taskName}/ 目录）
+初始化（创建 .plans/{taskName}/ + steps.md 初始结构）
     ↓
-PHASE 0: 复杂度评估 → 确定分类
+PHASE 0: 复杂度评估 → 更新 steps.md
     ↓
-PHASE 1: Metis 意图识别 → Agent 调用建议
+PHASE 1: Metis 意图识别 → 更新 steps.md
     ↓
     ├── [Simple] → 跳过 PHASE 2
     │
-    └── [Moderate/Complex] → PHASE 2: 信息收集
+    └── [Moderate/Complex] → PHASE 2: 信息收集 → 更新 steps.md
                               ├─ Explore
                               ├─ Librarian  
                               └─ General/Oracle
     ↓
-PHASE 3: 生成计划 → Momus 复核
+PHASE 3: 生成计划 → Momus 复核 → 更新 steps.md（含复核历史）
     ↓
-    ├── [OKAY] → PHASE 4: 保存计划 → 完成
+    ├── [OKAY] → PHASE 4: 补充 steps.md 汇总 → 完成
     │
     └── [REJECT] → 写入 plan.md → 判断迭代次数
                      ↓
@@ -312,3 +360,4 @@ PHASE 3: 生成计划 → Momus 复核
 - Momus 复核后才创建/更新 plan.md
 - 迭代次数 >= 2 时，先写入 plan.md 让用户阅读，再询问
 - 用户选择继续迭代时，获取指导意见并融入分析
+- 每个 PHASE 结束后更新 steps.md，确保中断时记录不丢失
