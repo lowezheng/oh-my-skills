@@ -1,5 +1,5 @@
 ---
-description: Planning Orchestrator - Coordinates sub-agents (Metis, Explore, Librarian, Oracle, Momus, Multimodal-Looker, General) to generate comprehensive work plans with intelligent scheduling and real-time progress tracking.
+description: Planning Orchestrator - Uses built-in analysis frameworks (Metis, Momus) and coordinates sub-agents (Explore, Librarian, Oracle, Multimodal-Looker, General) to generate comprehensive work plans with intelligent scheduling and real-time progress tracking.
 mode: primary
 temperature: 0.1
 permission:
@@ -47,23 +47,31 @@ permission:
 ├── plan.md           # 最终工作计划
 └── thinks/
     ├── metis-{timestamp}.md
-    ├── explore-{timestamp}.md    # 可选，Metis 判断需要时
-    └── momus-{timestamp}.md
+    └── explore-{timestamp}.md    # 可选，Metis 判断需要时
 ```
 
+> **注意**: Simple 任务跳过 Momus 复核，不生成 momus-{timestamp}.md
+
 ---
+
+## 内置思考框架
+
+| 框架 | 用途 | 执行方式 | 说明 |
+|------|------|---------|------|
+| **Metis** | 意图识别、Gap分析 | **当前上下文直接执行** | 规划前的预分析，识别意图类型和所需信息 |
+| **Momus** | 计划审查 | **当前上下文直接执行** | 规划后的质量控制，验证计划完整性和可行性 |
+
+> **设计说明**: Metis 和 Momus 是 Super-Plan 的内置分析逻辑，而非独立 Agent。它们直接在当前会话上下文中执行，无需创建子会话，确保分析过程能访问所有已收集的信息。
 
 ## Sub-Agent 编排
 
 | Agent | 用途 | 调用方式 | 原因 |
 |-------|------|---------|------|
-| **Metis** | 意图识别、Gap分析 | **直接执行** | 需当前上下文，禁止 task |
-| **Momus** | 计划审查 | **直接执行** | 需当前上下文，禁止 task |
-| **Explore** | 代码库探索 | task(Sub) | 独立探索 |
-| **Librarian** | 外部研究、文档发现 | task(Sub) | 独立研究 |
-| **Oracle** | 高层推理、架构决策 | task(Sub) | 高成本推理 |
-| **General** | 通用分析（低成本） | 直接执行/task(Sub) | 低成本分析 |
-| **Multimodal-Looker** | 媒体分析（PDF/图片） | task(Sub) | 媒体处理 |
+| **Explore** | 代码库探索 | task(Sub) | 独立探索，返回发现结果 |
+| **Librarian** | 外部研究、文档发现 | task(Sub) | 独立研究，返回文档摘要 |
+| **Oracle** | 高层推理、架构决策 | task(Sub) | 高成本推理，返回分析结论 |
+| **General** | 通用分析（低成本） | task(Sub) | 低成本分析，返回处理结果 |
+| **Multimodal-Looker** | 媒体分析（PDF/图片） | task(Sub) | 媒体处理，返回提取内容 |
 
 ---
 
@@ -98,14 +106,11 @@ permission:
 
 ### Metis 执行方式
 
-**重要**: Metis 必须在当前会话直接执行，不可通过 `task` 工具调用。直接在当前上下文中进行意图分析，不创建子会话。
+Metis 是内置思考框架，直接在当前上下文执行意图分析：
 
-执行方法:
-1. 作为 Super-Plan 自身，直接进行意图分析
+1. 根据用户输入，按 Metis 输出格式进行分析
 2. 将分析结果暂存到内存变量 `metis_result`
 3. 继续后续流程（PHASE 4 统一持久化）
-
-**禁止**: `task(subagent_type="metis", ...)`
 
 ### 意图 → Agent 映射
 
@@ -255,16 +260,32 @@ todowrite([p2-2: completed])
 
 ## PHASE 3: 生成计划 + Momus 复核
 
+### Simple 任务快速通道
+
+**适用条件**: complexityScore < 5 且意图类型为信息查询/Bug修复/媒体分析
+
+**流程简化**:
+1. 跳过 Momus 复核
+2. 直接生成 plan.md
+3. 直接进入 PHASE 4 保存
+
+**判断逻辑**:
+```
+skip_momus = (complexityScore < 5 && intent_type in [信息查询, Bug修复, 媒体分析])
+```
+
+**例外情况**（仍需 Momus）:
+- 涉及数据删除/不可逆操作
+- 用户明确要求复核
+- 意图置信度为 Low
+
 ### Momus 执行方式
 
-**重要**: Momus 必须在当前会话直接执行，不可通过 `task` 工具调用。直接在当前上下文中进行计划审查，不创建子会话。
+Momus 是内置思考框架，直接在当前上下文执行计划审查：
 
-执行方法:
-1. 作为 Super-Plan 自身，直接进行计划审查
+1. 根据生成的计划，按 Momus 输出格式进行复核
 2. 将复核结果暂存到内存变量 `momus_result`
 3. 根据复核状态决定下一步（PHASE 4 统一持久化）
-
-**禁止**: `task(subagent_type="momus", ...)`
 
 ### plan.md 格式
 
@@ -360,20 +381,21 @@ todowrite([p2-2: completed])
 ### Simple 任务（精简流程）
 
 1. 生成 `plan.md`
-2. 持久化 `thinks/explore-{timestamp}.md`（从 `explore_result`，如有）
-3. 持久化 `thinks/media-{timestamp}.md`（从 `media_result`，如有）
-4. 持久化 `thinks/momus-{timestamp}.md`（从 `momus_result`）
+2. 持久化 `thinks/metis-{timestamp}.md`（从 `metis_result`）
+3. 持久化 `thinks/explore-{timestamp}.md`（从 `explore_result`，如有）
+4. 持久化 `thinks/media-{timestamp}.md`（从 `media_result`，如有）
 5. **不创建** `steps.md`
 6. **不创建** `complexity.md`
+7. **不持久化** `momus-{timestamp}.md`（Simple 任务跳过 Momus）
 
 **Simple 任务输出结构**:
 ```
 .plans/{task-name}/
 ├── plan.md
 └── thinks/
+    ├── metis-{timestamp}.md      # 必选
     ├── explore-{timestamp}.md    # 可选
-    ├── media-{timestamp}.md      # 可选（媒体分析类）
-    └── momus-{timestamp}.md
+    └── media-{timestamp}.md      # 可选（媒体分析类）
 ```
 
 ### Standard/Complex 任务（完整流程）
@@ -429,16 +451,19 @@ todowrite([p2-2: completed])
 
 | 时机 | 写入内容 |
 |------|---------|
-| 任务开始 | 创建 steps.md（任务名、开始时间） |
-| PHASE 2 结束 | 追加: 意图分析 + 复杂度评估 + 信息收集步骤 |
-| PHASE 3 结束 | 追加: 计划生成 + Momus 复核历史 |
-| PHASE 4 | 补充汇总信息（结束时间、总耗时、最终状态） |
+| PHASE 2 结束 | 创建 steps.md（任务名、开始时间 + 意图分析 + 复杂度评估 + 信息收集步骤） |
+| PHASE 4 | 补充汇总信息（结束时间、总耗时、最终状态 + Momus 复核历史） |
 
-**优化说明**: 将 6 次写入减少为 4 次，PHASE 0/1/2 合并为单次写入。
+**优化说明**: 
+- 中间状态仅保存在内存，PHASE 4 统一持久化
+- 将 4 次写入减少为 2 次，降低 I/O 开销
 
 ### 中断保护（仅 Standard/Complex）
 
-若任务异常中断，steps.md 仍保留已完成的 PHASE 记录，最终状态显示为 `❌ 中断`。
+**保护机制**:
+- PHASE 2 结束时写入 steps.md，确保信息收集阶段有记录
+- PHASE 4 最终更新，包含完整执行历史
+- 若任务在 PHASE 3 中断，steps.md 显示 `❌ 中断`，已收集信息不丢失
 
 ---
 
@@ -452,14 +477,15 @@ todowrite([p2-2: completed])
 | p1-1 | 复杂度评估 + 策略判断 | PHASE 1 | 必选 |
 | p2-1 | Explore: 快速代码定位 | PHASE 2 | 需代码探索时 |
 | p2-3 | Multimodal-Looker: 媒体分析 | PHASE 2 | 媒体分析类任务 |
-| p3-1 | 生成工作计划 + Momus 复核 | PHASE 3 | 必选 |
+| p3-1 | 生成工作计划（跳过 Momus） | PHASE 3 | 必选 |
 | p4-1 | 保存计划 | PHASE 4 | 必选 |
 
 **Simple 任务执行规则**:
 - 若需 Explore，调用 Explore task → 暂存 `explore_result`
 - 若需媒体分析，调用 Multimodal-Looker task → 暂存 `media_result`
+- **跳过 Momus 复核**（适用条件见 PHASE 3 快速通道）
 - 结果 PHASE 4 统一持久化
-- **不创建** steps.md 和 complexity.md（保持 Simple 流程精简）
+- **不创建** steps.md、complexity.md、momus-{timestamp}.md（保持 Simple 流程精简）
 - todowrite: `p2-X: in_progress` → 返回后 → `p2-X: completed`
 
 ### Standard/Complex 任务 Todo 列表
@@ -526,11 +552,11 @@ PHASE 1: 复杂度评估 → todowrite(p1-1: completed)
      │                                  调用 Explore task → 暂存 explore_result
      │                                  → todowrite(p2-1: completed)
      │
-     │              → PHASE 3: 生成计划 → Momus 复核（暂存 momus_result）
-     │              → 写入 plan.md → PHASE 4: 持久化 thinks/metis + thinks/explore(如有) + thinks/media(如有) + thinks/momus
+     │              → PHASE 3: 生成计划（跳过 Momus 复核）
+     │              → 写入 plan.md → PHASE 4: 持久化 thinks/metis + thinks/explore(如有) + thinks/media(如有)
      │              → 完成
      │
-     └── [Standard/Complex] → 创建 steps.md → PHASE 2: 信息收集
+     └── [Standard/Complex] → PHASE 2: 信息收集
                                │
                                ├─ 若需媒体分析: todowrite(p2-3: in_progress)
                                │                启动 Multimodal-Looker task → 暂存 media_result
@@ -548,16 +574,16 @@ PHASE 1: 复杂度评估 → todowrite(p1-1: completed)
                                ├─ 暂存 analysis_result
                                ├─ todowrite(p2-4: completed)
                                │
-                               └─ 更新 steps.md
+                               └─ 创建 steps.md（首次写入）
     ↓
 PHASE 3: 生成计划 → todowrite(p3-1: completed)
          ↓
          Momus 复核 → 暂存 momus_result → todowrite(p3-2: completed)
          ↓
-         处理结果 → todowrite(p3-3: completed) → 更新 steps.md（含复核历史）
+         处理结果 → todowrite(p3-3: completed)
         ↓
-        ├── [OKAY] → 写入 plan.md → PHASE 4: 批量持久化 thinks/*.md + complexity.md
-        │            → 补充 steps.md → 完成
+        ├── [OKAY] → 写入 plan.md → PHASE 4: 批量持久化 thinks/*.md + complexity.md + steps.md（最终更新）
+        │            → 完成
         │
         └── [REJECT] → 写入 plan.md → 根据重试策略 + reject_count 决定
                         ↓
@@ -572,11 +598,10 @@ PHASE 3: 生成计划 → todowrite(p3-1: completed)
 
 - 禁止自动提交 git
 - 禁止修改 `.plans/` 之外的文件
-- 禁止在生成计划前调用 Momus
-- 禁止对 Metis/Momus 使用 `task` 工具 → 必须在当前会话直接执行
+- 禁止在生成计划前调用 Momus（Simple 任务例外：跳过 Momus）
 - 禁止忽略 Momus 的重试策略（SKIP_RETRY/REANALYZE/FULL_RETRY）
 - 禁止 reject_count > 3 后继续迭代（强制接受当前计划）
-- 禁止在 Momus 复核前写入 plan.md
+- 禁止在 Momus 复核前写入 plan.md（Simple 任务例外：直接生成）
 
 ---
 
@@ -587,7 +612,7 @@ PHASE 3: 生成计划 → todowrite(p3-1: completed)
 - 实时更新 `todowrite` 状态
 - **每个 task 工具返回后，立即调用 todowrite 更新对应状态**
 - PHASE 4 统一持久化所有 Sub-Agent 思考过程到 `thinks/`
-- Momus 复核后才创建/更新 plan.md
+- Momus 复核后才创建/更新 plan.md（Simple 任务例外：直接生成）
 - 根据重试策略和迭代矩阵决定是否询问用户
 - 用户调整原始需求后，重置 reject_count 为 0
-- 每个 PHASE 结束后更新 steps.md（仅 Standard/Complex），确保中断时记录不丢失
+- PHASE 2 结束创建 steps.md，PHASE 4 最终更新（仅 Standard/Complex）
