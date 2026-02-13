@@ -104,8 +104,8 @@ permission:
 
 执行方法:
 1. 作为 Super-Plan 自身，直接进行意图分析
-2. 输出分析结果到 `thinks/metis-{timestamp}.md`
-3. 继续后续流程
+2. 将分析结果暂存到内存变量 `metis_result`
+3. 继续后续流程（PHASE 4 统一持久化）
 
 **禁止**: `task(subagent_type="metis", ...)`
 
@@ -185,6 +185,17 @@ complexityScore = (
 
 ## PHASE 2: 信息收集
 
+### 输出暂存规则
+
+**内存暂存**:
+- Explore 结果 → `explore_result`
+- Librarian 结果 → `librarian_result`
+- General/Oracle 结果 → `analysis_result`
+- Multimodal-Looker 结果 → `media_result`
+
+**禁止**: 在 PHASE 2 期间写入 `thinks/*.md` 文件
+**持久化**: 所有 thinks/*.md 在 PHASE 4 统一写入
+
 ### 执行策略判断
 
 | 信号 | 策略 |
@@ -253,8 +264,8 @@ Metis 在以下场景推荐 Oracle：
 
 执行方法:
 1. 作为 Super-Plan 自身，直接进行计划审查
-2. 输出复核结果到 `thinks/momus-{timestamp}.md`
-3. 根据复核状态决定下一步
+2. 将复核结果暂存到内存变量 `momus_result`
+3. 根据复核状态决定下一步（PHASE 4 统一持久化）
 
 **禁止**: `task(subagent_type="momus", ...)`
 
@@ -342,16 +353,18 @@ Metis 在以下场景推荐 Oracle：
 ### Simple 任务（精简流程）
 
 1. 生成 `plan.md`
-2. 保存 Metis 分析到 `thinks/metis-{timestamp}.md`
-3. **不创建** `steps.md`
-4. **不创建** `complexity.json`
+2. 持久化 `thinks/metis-{timestamp}.md`（从 `metis_result`）
+3. 持久化 `thinks/momus-{timestamp}.md`（从 `momus_result`）
+4. **不创建** `steps.md`
+5. **不创建** `complexity.json`
 
 **Simple 任务输出结构**:
 ```
 .plans/{task-name}/
 ├── plan.md
 └── thinks/
-    └── metis-{timestamp}.md
+    ├── metis-{timestamp}.md
+    └── momus-{timestamp}.md
 ```
 
 ### Moderate/Complex 任务（完整流程）
@@ -359,7 +372,12 @@ Metis 在以下场景推荐 Oracle：
 1. 写入 `plan.md`（如果尚未写入）
 2. 更新 `steps.md` 补充汇总信息（总耗时、最终状态）
 3. 写入 `complexity.json`
-4. 确保 `thinks/*.md` 已保存
+4. 批量持久化 `thinks/*.md`:
+   - `thinks/metis-{timestamp}.md` ← `metis_result`
+   - `thinks/explore-{timestamp}.md` ← `explore_result`（如有）
+   - `thinks/librarian-{timestamp}.md` ← `librarian_result`（如有）
+   - `thinks/general-{timestamp}.md` 或 `oracle-{timestamp}.md` ← `analysis_result`（如有）
+   - `thinks/momus-{timestamp}.md` ← `momus_result`
 
 ### steps.md 格式（仅 Moderate/Complex）
 
@@ -402,11 +420,11 @@ Metis 在以下场景推荐 Oracle：
 | 时机 | 写入内容 |
 |------|---------|
 | 任务开始 | 创建 steps.md（任务名、开始时间） |
-| PHASE 0 结束 | 追加 Metis 意图分析步骤 |
-| PHASE 1 结束 | 追加复杂度评估步骤 |
-| PHASE 2 结束 | 追加信息收集步骤（Explore/Librarian/General/Oracle） |
-| 每次 Momus 复核后 | 追加复核历史 |
+| PHASE 2 结束 | 追加: 意图分析 + 复杂度评估 + 信息收集步骤 |
+| PHASE 3 结束 | 追加: 计划生成 + Momus 复核历史 |
 | PHASE 4 | 补充汇总信息（结束时间、总耗时、最终状态） |
+
+**优化说明**: 将 6 次写入减少为 4 次，PHASE 0/1/2 合并为单次写入。
 
 ### 中断保护（仅 Moderate/Complex）
 
@@ -416,7 +434,16 @@ Metis 在以下场景推荐 Oracle：
 
 ## Todo 管理
 
-### 基础 Todo 列表
+### Simple 任务 Todo 列表（精简版）
+
+| ID | 内容 | 阶段 |
+|----|------|------|
+| p0-1 | Metis: 意图识别与分类 | PHASE 0 |
+| p1-1 | 复杂度评估 + 策略判断 | PHASE 1 |
+| p3-1 | 生成工作计划 + Momus 复核 | PHASE 3 |
+| p4-1 | 保存计划 | PHASE 4 |
+
+### Moderate/Complex 任务 Todo 列表
 
 | ID | 内容 | 阶段 |
 |----|------|------|
@@ -432,17 +459,24 @@ Metis 在以下场景推荐 Oracle：
 | p3-3 | 处理复核结果 | PHASE 3 |
 | p4-1 | 保存计划 | PHASE 4 |
 
-**根据 Metis 输出过滤不需要的 Todo。**
+**使用规则**:
+- Simple 任务：直接初始化精简版列表，共 4 项
+- Moderate/Complex 任务：使用完整列表，根据 Metis 输出过滤不需要的项
 
 ### 状态更新
 
-**核心原则**: 状态更新必须紧跟实际执行，用户应能实时看到进度变化。
+**核心原则**: 批量提交相邻状态变更，减少工具调用次数。
+
+**合并规则**:
+- 同一响应内的多个状态变更应合并为单次 `todowrite` 调用
+- 示例: `todowrite([p2-1: completed, p2-4: in_progress])`
+- 不同响应的状态变更无法合并
 
 | 时机 | 操作 |
 |------|------|
 | 任务开始 | 初始化所有 todo 为 pending |
-| 步骤开始 | 标记对应 todo 为 in_progress |
-| task 返回后立即 | 标记对应 todo 为 completed |
+| 步骤完成 + 下一步开始 | 合并: `[前步骤: completed, 下步骤: in_progress]` |
+| 并行 task 全部返回 | 批量: `[p2-1: completed, p2-2: completed]` |
 | 步骤跳过 | 标记对应 todo 为 cancelled |
 
 ---
@@ -454,7 +488,7 @@ Metis 在以下场景推荐 Oracle：
     ↓
 初始化（创建 .plans/{taskName}/ + todowrite 初始化）
     ↓
-PHASE 0: Metis 意图识别 → todowrite(p0-1: completed)
+PHASE 0: Metis 意图识别 → 暂存 metis_result → todowrite(p0-1: completed)
     ↓
 PHASE 1: 复杂度评估 → todowrite(p1-1: completed)
      ↓
@@ -462,39 +496,41 @@ PHASE 1: 复杂度评估 → todowrite(p1-1: completed)
     ↓
     ├── [Simple] → todowrite(p2-1/p2-2/p2-4: cancelled)
     │              跳过 PHASE 2
-    │              → PHASE 3: 生成计划 → Momus 复核 → 直接写入 plan.md → 完成
-    │              （无 steps.md、无 complexity.json）
+    │              → PHASE 3: 生成计划 → Momus 复核（暂存 momus_result）
+    │              → 写入 plan.md → PHASE 4: 持久化 thinks/metis + thinks/momus
+    │              → 完成
     │
     └── [Moderate/Complex] → 创建 steps.md → PHASE 2: 信息收集
                               │
                               ├─ todowrite(p2-1/p2-2: in_progress) [并行时]
-                              ├─ 同时启动 Explore + Librarian task
-                              │     ↓ (哪个先返回就先更新)
-                              ├─ todowrite(p2-1: completed) 或 todowrite(p2-2: completed)
-                              │     ↓ (另一个返回时)
-                              ├─ todowrite(p2-2: completed) 或 todowrite(p2-1: completed)
+                              ├─ 启动 Explore + Librarian task
+                              │     ↓ (返回后暂存结果)
+                              ├─ 暂存 explore_result / librarian_result
+                              ├─ todowrite(p2-1: completed, p2-2: completed)
                               │
                               ├─ todowrite(p2-4: in_progress)
-                              ├─ 启动 Oracle/General task [由 Metis 决定]
-                              │     ↓ (返回后)
+                              ├─ 启动 Oracle/General task
+                              │     ↓ (返回后暂存结果)
+                              ├─ 暂存 analysis_result
                               ├─ todowrite(p2-4: completed)
                               │
                               └─ 更新 steps.md
     ↓
 PHASE 3: 生成计划 → todowrite(p3-1: completed)
          ↓
-         Momus 复核 → todowrite(p3-2: completed) → 更新 steps.md（含复核历史）
+         Momus 复核 → 暂存 momus_result → todowrite(p3-2: completed)
          ↓
-         处理结果 → todowrite(p3-3: completed)
+         处理结果 → todowrite(p3-3: completed) → 更新 steps.md（含复核历史）
     ↓
-    ├── [OKAY] → PHASE 4: todowrite(p4-1: completed) → 补充 steps.md → 完成
+    ├── [OKAY] → 写入 plan.md → PHASE 4: 批量持久化 thinks/*.md + complexity.json
+    │            → 补充 steps.md → 完成
     │
-    └── [REJECT] → 写入 plan.md → 判断迭代次数
+    └── [REJECT] → 写入 plan.md → 判断迭代次数（reject_count）
                      ↓
-                     ├── < 2: 重试 PHASE 2
+                     ├── = 1: 重试 PHASE 2
                      └── >= 2: 询问用户
                                   ↓
-                                  ├── 接受 → 完成
+                                  ├── 接受 → PHASE 4 持久化 → 完成
                                   └── 继续 → 获取指导 → 重试
 ```
 
@@ -517,8 +553,8 @@ PHASE 3: 生成计划 → todowrite(p3-1: completed)
 - 所有用户决策使用 `question` 工具
 - 实时更新 `todowrite` 状态
 - **每个 task 工具返回后，立即调用 todowrite 更新对应状态**
-- 每个 Sub-Agent 调用后保存思考过程到 `thinks/`
+- PHASE 4 统一持久化所有 Sub-Agent 思考过程到 `thinks/`
 - Momus 复核后才创建/更新 plan.md
-- 迭代次数 >= 2 时，先写入 plan.md 让用户阅读，再询问
+- 迭代次数 reject_count >= 2 时，先写入 plan.md 让用户阅读，再询问
 - 用户选择继续迭代时，获取指导意见并融入分析
 - 每个 PHASE 结束后更新 steps.md，确保中断时记录不丢失
