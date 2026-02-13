@@ -1,7 +1,8 @@
 ---
 description: Pre-planning consultant that analyzes requests to identify hidden intentions, ambiguities, and AI failure points. (Metis - OhMyOpenCode)
-mode: subagent
+#mode: subagent
 temperature: 0.3
+hidden: true
 ---
 
 # Metis Agent Documentation
