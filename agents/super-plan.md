@@ -92,10 +92,6 @@ permission:
 - 推荐 Agent: [General/Oracle]
 - 理由: [涉及架构决策/安全考量/性能关键/多系统集成 → Oracle；否则 General]
 
-### Simple 任务 Explore 判断（仅 Simple 任务需填写）
-- 是否需要 Explore: [是/否]
-- 理由: [涉及代码定位/纯信息查询/媒体分析]
-
 ### 用户澄清问题
 1. [问题] (如有)
 ```
@@ -169,15 +165,19 @@ complexityScore = (
 | 评分 | 分类 | 记录模式 | Agent 调用策略 |
 |------|------|---------|---------------|
 | < 5 | Simple | 精简 | 可选 Explore/Librarian（Metis 判断），直接生成计划 |
-| 5-10 | Standard | 标准 | Explore 必选 + 可选 Librarian + 可选分析 Agent（Metis 判断） |
-| ≥ 10 | Complex | 标准 | Explore + Librarian + 分析 Agent（General/Oracle，Metis 判断） |
+| 5-10 | Standard | 标准 | Explore + 可选 Librarian + 可选分析 Agent（Metis 判断） |
+| > 10 | Complex | 复杂 | Explore + Librarian + 分析 Agent（General/Oracle，Metis 判断） |
 
 **简化说明**:
-- 合并原 Moderate 为 Standard
 - 提高阈值：Simple < 5, Standard 5-10, Complex ≥ 10
 - Standard 任务：Explore 必选，其他按需
 
 **注意**: 分析 Agent（General/Oracle）的选择由 Metis 在意图识别阶段决定，而非仅依赖复杂度评分。
+
+### Simple 任务 Explore 判断（仅 complexityScore < 5 时执行）
+
+- 是否需要 Explore: [是/否]
+- 理由: [涉及代码定位 → 是 / 纯信息查询或媒体分析 → 否]
 
 ### 示例
 
@@ -241,26 +241,15 @@ todowrite([p2-2: completed])
 
 ### 分析 Agent 选择
 
-**由 Metis 决定**，而非复杂度评分自动映射。
-
-Metis 在以下场景推荐 Oracle：
-- 涉及架构决策（系统拆分、技术选型）
-- 涉及安全考量（认证、授权、数据保护）
-- 性能关键场景（高并发、低延迟要求）
-- 多系统集成（第三方 API、微服务协作）
-
-其他场景推荐 General。
+**由 Metis 在 PHASE 0 决定**，参见 Metis 输出格式的 "分析 Agent 建议"。根据 Metis 的推荐调用 General 或 Oracle task。
 
 ### PHASE 2 状态更新规范
 
-**关键规则**: 每个 Sub-Agent 任务返回后，必须立即更新 `todowrite`，不可等待其他任务完成。并行场景同理，哪个先返回就先更新哪个。
+**串行执行**: 每个 Sub-Agent 任务返回后，立即调用 todowrite 更新状态
 
-**并行场景状态更新**:
+**并行执行**:
 - 并行 task 在同一响应中原子返回所有结果
-- 所有并行 task 返回后，批量更新状态
-
-**错误做法**: 假设可以分批更新并行 task 的状态
-**正确做法**: 并行 task 全部返回后一次性批量更新
+- 所有并行 task 返回后，批量更新状态（单次 todowrite 调用）
 
 ---
 
@@ -342,8 +331,8 @@ Metis 在以下场景推荐 Oracle：
             ↓                  ↓                  ↓
        [SKIP_RETRY]      [REANALYZE]       [FULL_RETRY]
             ↓                  ↓                  ↓
-      直接重新生成        重新调用          重新执行
-       计划(内存)      General/Oracle      PHASE 2
+      直接重新生成             重新调用          重新执行
+       计划(内存)            General/Oracle      PHASE 2
             ↓                  ↓                  ↓
       → Momus 复核       → 分析结果暂存      → 所有结果暂存
             ↓                  ↓                  ↓
@@ -371,8 +360,8 @@ Metis 在以下场景推荐 Oracle：
 ### Simple 任务（精简流程）
 
 1. 生成 `plan.md`
-2. 持久化 `thinks/metis-{timestamp}.md`（从 `metis_result`）
-3. 持久化 `thinks/explore-{timestamp}.md`（从 `explore_result`，如有）
+2. 持久化 `thinks/explore-{timestamp}.md`（从 `explore_result`，如有）
+3. 持久化 `thinks/media-{timestamp}.md`（从 `media_result`，如有）
 4. 持久化 `thinks/momus-{timestamp}.md`（从 `momus_result`）
 5. **不创建** `steps.md`
 6. **不创建** `complexity.md`
@@ -382,8 +371,8 @@ Metis 在以下场景推荐 Oracle：
 .plans/{task-name}/
 ├── plan.md
 └── thinks/
-    ├── metis-{timestamp}.md
     ├── explore-{timestamp}.md    # 可选
+    ├── media-{timestamp}.md      # 可选（媒体分析类）
     └── momus-{timestamp}.md
 ```
 
@@ -396,6 +385,7 @@ Metis 在以下场景推荐 Oracle：
    - `thinks/metis-{timestamp}.md` ← `metis_result`
    - `thinks/explore-{timestamp}.md` ← `explore_result`（如有）
    - `thinks/librarian-{timestamp}.md` ← `librarian_result`（如有）
+   - `thinks/media-{timestamp}.md` ← `media_result`（如有）
    - `thinks/general-{timestamp}.md` 或 `oracle-{timestamp}.md` ← `analysis_result`（如有）
    - `thinks/momus-{timestamp}.md` ← `momus_result`
 
@@ -460,15 +450,17 @@ Metis 在以下场景推荐 Oracle：
 |----|------|------|------|
 | p0-1 | Metis: 意图识别与分类 | PHASE 0 | 必选 |
 | p1-1 | 复杂度评估 + 策略判断 | PHASE 1 | 必选 |
-| p2-1 | Explore: 快速代码定位 | PHASE 2 | Metis 判断需要 |
+| p2-1 | Explore: 快速代码定位 | PHASE 2 | 需代码探索时 |
+| p2-3 | Multimodal-Looker: 媒体分析 | PHASE 2 | 媒体分析类任务 |
 | p3-1 | 生成工作计划 + Momus 复核 | PHASE 3 | 必选 |
 | p4-1 | 保存计划 | PHASE 4 | 必选 |
 
-**Simple + Explore 规则**:
-- 若 Metis 判断需要 Explore，在 PHASE 1 后调用 Explore task
-- Explore 结果暂存到 `explore_result`，PHASE 4 统一持久化
+**Simple 任务执行规则**:
+- 若需 Explore，调用 Explore task → 暂存 `explore_result`
+- 若需媒体分析，调用 Multimodal-Looker task → 暂存 `media_result`
+- 结果 PHASE 4 统一持久化
 - **不创建** steps.md 和 complexity.md（保持 Simple 流程精简）
-- todowrite: `p2-1: in_progress` → 返回后 → `p2-1: completed`
+- todowrite: `p2-X: in_progress` → 返回后 → `p2-X: completed`
 
 ### Standard/Complex 任务 Todo 列表
 
@@ -521,49 +513,57 @@ PHASE 1: 复杂度评估 → todowrite(p1-1: completed)
      ↓
      判断策略 → todowrite(p1-2: completed)
     ↓
-    ├── [Simple] → 判断是否需要 Explore
-    │              │
-    │              ├── [不需要] → todowrite(p2-1: cancelled)
-    │              │              跳过 PHASE 2
-    │              │
-    │              └── [需要] → todowrite(p2-1: in_progress)
-    │                          调用 Explore task → 暂存 explore_result
-    │                          → todowrite(p2-1: completed)
-    │
-    │              → PHASE 3: 生成计划 → Momus 复核（暂存 momus_result）
-    │              → 写入 plan.md → PHASE 4: 持久化 thinks/metis + thinks/explore(如有) + thinks/momus
-    │              → 完成
-    │
-    └── [Standard/Complex] → 创建 steps.md → PHASE 2: 信息收集
-                              │
-                              ├─ todowrite(p2-1/p2-2: in_progress) [并行时]
-                              ├─ 启动 Explore + Librarian task
-                              │     ↓ (返回后暂存结果)
-                              ├─ 暂存 explore_result / librarian_result
-                              ├─ todowrite(p2-1: completed, p2-2: completed)
-                              │
-                              ├─ todowrite(p2-4: in_progress)
-                              ├─ 启动 Oracle/General task
-                              │     ↓ (返回后暂存结果)
-                              ├─ 暂存 analysis_result
-                              ├─ todowrite(p2-4: completed)
-                              │
-                              └─ 更新 steps.md
+    ├── [Simple] → 判断是否需要 Explore/Media
+     │              │
+     │              ├── [媒体分析类] → todowrite(p2-1: cancelled, p2-3: in_progress)
+     │              │                  调用 Multimodal-Looker task → 暂存 media_result
+     │              │                  → todowrite(p2-3: completed)
+     │              │
+     │              ├── [纯信息查询] → todowrite(p2-1: cancelled)
+     │              │                  跳过 PHASE 2
+     │              │
+     │              └── [需要 Explore] → todowrite(p2-1: in_progress)
+     │                                  调用 Explore task → 暂存 explore_result
+     │                                  → todowrite(p2-1: completed)
+     │
+     │              → PHASE 3: 生成计划 → Momus 复核（暂存 momus_result）
+     │              → 写入 plan.md → PHASE 4: 持久化 thinks/metis + thinks/explore(如有) + thinks/media(如有) + thinks/momus
+     │              → 完成
+     │
+     └── [Standard/Complex] → 创建 steps.md → PHASE 2: 信息收集
+                               │
+                               ├─ 若需媒体分析: todowrite(p2-3: in_progress)
+                               │                启动 Multimodal-Looker task → 暂存 media_result
+                               │                → todowrite(p2-3: completed)
+                               │
+                               ├─ todowrite(p2-1/p2-2: in_progress) [并行时]
+                               ├─ 启动 Explore + Librarian task
+                               │     ↓ (返回后暂存结果)
+                               ├─ 暂存 explore_result / librarian_result
+                               ├─ todowrite(p2-1: completed, p2-2: completed)
+                               │
+                               ├─ todowrite(p2-4: in_progress)
+                               ├─ 启动 Oracle/General task
+                               │     ↓ (返回后暂存结果)
+                               ├─ 暂存 analysis_result
+                               ├─ todowrite(p2-4: completed)
+                               │
+                               └─ 更新 steps.md
     ↓
 PHASE 3: 生成计划 → todowrite(p3-1: completed)
          ↓
          Momus 复核 → 暂存 momus_result → todowrite(p3-2: completed)
          ↓
          处理结果 → todowrite(p3-3: completed) → 更新 steps.md（含复核历史）
-    ↓
-    ├── [OKAY] → 写入 plan.md → PHASE 4: 批量持久化 thinks/*.md + complexity.md
-    │            → 补充 steps.md → 完成
-    │
-    └── [REJECT] → 写入 plan.md → 根据重试策略 + reject_count 决定
-                     ↓
-                     ├── [SKIP_RETRY]: 直接重新生成计划 → Momus 复核
-                     ├── [REANALYZE]: 重新调用分析 Agent → 生成计划 → Momus 复核
-                     └── [FULL_RETRY]: 重试 PHASE 2（按迭代规则判断是否询问用户）
+        ↓
+        ├── [OKAY] → 写入 plan.md → PHASE 4: 批量持久化 thinks/*.md + complexity.md
+        │            → 补充 steps.md → 完成
+        │
+        └── [REJECT] → 写入 plan.md → 根据重试策略 + reject_count 决定
+                        ↓
+                        ├── [SKIP_RETRY]: 直接重新生成计划 → Momus 复核
+                        ├── [REANALYZE]: 重新调用分析 Agent → 生成计划 → Momus 复核
+                        └── [FULL_RETRY]: 重试 PHASE 2（按迭代规则判断是否询问用户）
 ```
 
 ---
