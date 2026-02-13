@@ -24,19 +24,19 @@ permission:
 
 ## 文件结构
 
-### Moderate/Complex 任务
+### Standard/Complex 任务
 
 ```
 .plans/{task-name}/
 ├── plan.md           # 最终工作计划
 ├── steps.md          # 执行步骤记录（每 PHASE 更新，防中断丢失）
-├── complexity.md   # 复杂度评估
+├── complexity.md     # 复杂度评估
 └── thinks/           # Sub-Agent 思考过程
     ├── metis-{timestamp}.md
     ├── explore-{timestamp}.md
     ├── librarian-{timestamp}.md
-    ├── general-{timestamp}.md    # 中等任务
-    ├── oracle-{timestamp}.md     # 复杂任务
+    ├── general-{timestamp}.md    # Standard 任务
+    ├── oracle-{timestamp}.md     # Complex 任务
     └── momus-{timestamp}.md
 ```
 
@@ -46,7 +46,9 @@ permission:
 .plans/{task-name}/
 ├── plan.md           # 最终工作计划
 └── thinks/
-    └── metis-{timestamp}.md
+    ├── metis-{timestamp}.md
+    ├── explore-{timestamp}.md    # 可选，Metis 判断需要时
+    └── momus-{timestamp}.md
 ```
 
 ---
@@ -166,9 +168,14 @@ complexityScore = (
 
 | 评分 | 分类 | 记录模式 | Agent 调用策略 |
 |------|------|---------|---------------|
-| < 4 | Simple | 精简 | 可选 Explore（Metis 判断） + 可选 Librarian（Metis 判断），直接生成计划 |
-| 4-8 | Moderate | 标准 | 可选 Explore（Metis 判断） + 可选 Librarian（Metis 判断） + **由 Metis 决定** |
-| ≥ 8 | Complex | 标准 | Explore + Librarian + **由 Metis 决定** |
+| < 5 | Simple | 精简 | 可选 Explore/Librarian（Metis 判断），直接生成计划 |
+| 5-10 | Standard | 标准 | Explore 必选 + 可选 Librarian + 可选分析 Agent（Metis 判断） |
+| ≥ 10 | Complex | 标准 | Explore + Librarian + 分析 Agent（General/Oracle，Metis 判断） |
+
+**简化说明**:
+- 合并原 Moderate 为 Standard
+- 提高阈值：Simple < 5, Standard 5-10, Complex ≥ 10
+- Standard 任务：Explore 必选，其他按需
 
 **注意**: 分析 Agent（General/Oracle）的选择由 Metis 在意图识别阶段决定，而非仅依赖复杂度评分。
 
@@ -177,9 +184,10 @@ complexityScore = (
 | 任务 | intent | research | difficulty | dependency | familiarity | risk | 总分 | 分类 |
 |-----|--------|----------|------------|------------|-------------|------|------|------|
 | 修复登录 bug | 1.5 | 0 | 1.0 | 0 | 0 | 0 | 2.5 | Simple |
-| 添加用户注册 API | 2 | 1.2 | 1.0 | 1 | 0 | 0.6 | 5.4 | Moderate |
-| 重构支付模块 | 3.5 | 1.2 | 1.2 | 1.5 | 0.5 | 0.6 | 8.5 | Complex |
-| 实现实时聊天功能 | 3 | 1.2 | 1.5 | 2 | 1 | 0.6 | 11.1 | Complex |
+| 添加用户注册 API | 2 | 1.2 | 1.0 | 1 | 0 | 0.6 | 5.8 | Standard |
+| 重构支付模块 | 3.5 | 1.2 | 1.2 | 1.5 | 0.5 | 0.6 | 8.5 | Standard |
+| 实现实时聊天功能 | 3 | 1.2 | 1.5 | 2 | 1 | 0.6 | 11.3 | Complex |
+| 全局性能优化 | 2.5 | 1.2 | 1.5 | 2 | 1 | 1.2 | 10.4 | Complex |
 
 ---
 
@@ -276,7 +284,7 @@ Metis 在以下场景推荐 Oracle：
 
 ## 任务概述
 - 意图类型: [来自 Metis]
-- 复杂度: [Simple/Moderate/Complex]
+- 复杂度: [Simple/Standard/Complex]
 - 涉及文件: [来自 Explore]
 
 ## 关键决策
@@ -305,6 +313,11 @@ Metis 在以下场景推荐 Oracle：
 
 ### 状态: [OKAY] / [REJECT]
 
+### 重试策略 (仅 REJECT)
+- [SKIP_RETRY]: 计划格式/措辞问题，直接重新生成计划（不调用任何 Sub-Agent）
+- [REANALYZE]: 分析结论有误，重新调用分析 Agent（General/Oracle），但复用 Explore/Librarian 结果
+- [FULL_RETRY]: 信息收集不足或方向错误，重新执行完整 PHASE 2
+
 ### 总结
 [1-2 句结论]
 
@@ -317,34 +330,39 @@ Metis 在以下场景推荐 Oracle：
 ```
 生成计划(内存) → Momus 复核
                      ↓
-         ┌──────────┴──────────┐
-         ↓                     ↓
-      [OKAY]               [REJECT]
-         ↓                     ↓
-   写入 plan.md         写入 plan.md（含问题/修复情况）
-         ↓                     ↓
-       完成            迭代次数 < 2？
+         ┌───────────┴───────────┐
+         ↓                       ↓
+      [OKAY]                 [REJECT]
+         ↓                       ↓
+   写入 plan.md        写入 plan.md（含问题/修复情况）
+         ↓                       ↓
+       完成            根据重试策略分支:
                                ↓
-                    ┌──────────┴──────────┐
-                    ↓                     ↓
-                   是                     否
-                    ↓                     ↓
-              重试 PHASE 2         询问用户决策
-                                           ↓
-                                ┌──────────┴──────────┐
-                                ↓                     ↓
-                           继续迭代              接受当前计划
-                                ↓                     ↓
-                        获取指导意见               完成
-                                ↓
-                        重试 PHASE 2（融入指导）
+            ┌──────────────────┼──────────────────┐
+            ↓                  ↓                  ↓
+       [SKIP_RETRY]      [REANALYZE]       [FULL_RETRY]
+            ↓                  ↓                  ↓
+      直接重新生成        重新调用          重新执行
+       计划(内存)      General/Oracle      PHASE 2
+            ↓                  ↓                  ↓
+      → Momus 复核       → 分析结果暂存      → 所有结果暂存
+            ↓                  ↓                  ↓
+      (计数+1)         → 生成计划 → Momus   → 生成计划 → Momus
 ```
 
-**迭代规则（基于总 REJECT 次数）：**
-- `reject_count = 1`：自动重试 PHASE 2
-- `reject_count = 2`：询问用户决策
-- `reject_count > 2`：必须用户确认才能继续
-- 用户选择"继续迭代"：获取指导意见，融入下次分析
+**迭代规则（基于 reject_count 和重试策略）：**
+
+| reject_count | SKIP_RETRY | REANALYZE | FULL_RETRY |
+|--------------|------------|-----------|------------|
+| = 1 | 自动执行 | 自动执行 | 自动执行 |
+| = 2 | 自动执行 | 询问用户 | 询问用户 |
+| = 3 | 自动执行 | 强制接受 | 强制接受或取消 |
+| > 3 | 强制接受 | 强制接受 | 强制接受 |
+
+**说明**:
+- `reject_count` 每次进入 PHASE 3 时递增
+- 用户调整原始需求后，`reject_count` 重置为 0
+- "强制接受"：保留当前计划，标注 `⚠️ 需人工复核`
 
 ---
 
@@ -354,9 +372,10 @@ Metis 在以下场景推荐 Oracle：
 
 1. 生成 `plan.md`
 2. 持久化 `thinks/metis-{timestamp}.md`（从 `metis_result`）
-3. 持久化 `thinks/momus-{timestamp}.md`（从 `momus_result`）
-4. **不创建** `steps.md`
-5. **不创建** `complexity.json`
+3. 持久化 `thinks/explore-{timestamp}.md`（从 `explore_result`，如有）
+4. 持久化 `thinks/momus-{timestamp}.md`（从 `momus_result`）
+5. **不创建** `steps.md`
+6. **不创建** `complexity.md`
 
 **Simple 任务输出结构**:
 ```
@@ -364,14 +383,15 @@ Metis 在以下场景推荐 Oracle：
 ├── plan.md
 └── thinks/
     ├── metis-{timestamp}.md
+    ├── explore-{timestamp}.md    # 可选
     └── momus-{timestamp}.md
 ```
 
-### Moderate/Complex 任务（完整流程）
+### Standard/Complex 任务（完整流程）
 
 1. 写入 `plan.md`（如果尚未写入）
 2. 更新 `steps.md` 补充汇总信息（总耗时、最终状态）
-3. 写入 `complexity.json`
+3. 写入 `complexity.md`
 4. 批量持久化 `thinks/*.md`:
    - `thinks/metis-{timestamp}.md` ← `metis_result`
    - `thinks/explore-{timestamp}.md` ← `explore_result`（如有）
@@ -379,7 +399,7 @@ Metis 在以下场景推荐 Oracle：
    - `thinks/general-{timestamp}.md` 或 `oracle-{timestamp}.md` ← `analysis_result`（如有）
    - `thinks/momus-{timestamp}.md` ← `momus_result`
 
-### steps.md 格式（仅 Moderate/Complex）
+### steps.md 格式（仅 Standard/Complex）
 
 > **注意**: Simple 任务不生成此文件
 
@@ -393,7 +413,7 @@ Metis 在以下场景推荐 Oracle：
 | 开始时间 | {YYYY-MM-DD HH:mm:ss} |
 | 结束时间 | {YYYY-MM-DD HH:mm:ss} |
 | 总耗时 | {Xm Ys} |
-| 复杂度 | {Simple/Moderate/Complex} |
+| 复杂度 | {Simple/Standard/Complex} |
 | 最终状态 | {✅ 完成 / ⚠️ 需人工确认 / ❌ 中断} |
 
 ## 执行步骤
@@ -413,7 +433,7 @@ Metis 在以下场景推荐 Oracle：
 - 迭代次数: {N}
 ```
 
-### 步骤记录写入策略（仅 Moderate/Complex）
+### 步骤记录写入策略（仅 Standard/Complex）
 
 > **Simple 任务跳过所有 steps.md 相关操作**
 
@@ -426,7 +446,7 @@ Metis 在以下场景推荐 Oracle：
 
 **优化说明**: 将 6 次写入减少为 4 次，PHASE 0/1/2 合并为单次写入。
 
-### 中断保护（仅 Moderate/Complex）
+### 中断保护（仅 Standard/Complex）
 
 若任务异常中断，steps.md 仍保留已完成的 PHASE 记录，最终状态显示为 `❌ 中断`。
 
@@ -434,16 +454,23 @@ Metis 在以下场景推荐 Oracle：
 
 ## Todo 管理
 
-### Simple 任务 Todo 列表（精简版）
+### Simple 任务 Todo 列表
 
-| ID | 内容 | 阶段 |
-|----|------|------|
-| p0-1 | Metis: 意图识别与分类 | PHASE 0 |
-| p1-1 | 复杂度评估 + 策略判断 | PHASE 1 |
-| p3-1 | 生成工作计划 + Momus 复核 | PHASE 3 |
-| p4-1 | 保存计划 | PHASE 4 |
+| ID | 内容 | 阶段 | 条件 |
+|----|------|------|------|
+| p0-1 | Metis: 意图识别与分类 | PHASE 0 | 必选 |
+| p1-1 | 复杂度评估 + 策略判断 | PHASE 1 | 必选 |
+| p2-1 | Explore: 快速代码定位 | PHASE 2 | Metis 判断需要 |
+| p3-1 | 生成工作计划 + Momus 复核 | PHASE 3 | 必选 |
+| p4-1 | 保存计划 | PHASE 4 | 必选 |
 
-### Moderate/Complex 任务 Todo 列表
+**Simple + Explore 规则**:
+- 若 Metis 判断需要 Explore，在 PHASE 1 后调用 Explore task
+- Explore 结果暂存到 `explore_result`，PHASE 4 统一持久化
+- **不创建** steps.md 和 complexity.md（保持 Simple 流程精简）
+- todowrite: `p2-1: in_progress` → 返回后 → `p2-1: completed`
+
+### Standard/Complex 任务 Todo 列表
 
 | ID | 内容 | 阶段 |
 |----|------|------|
@@ -460,8 +487,8 @@ Metis 在以下场景推荐 Oracle：
 | p4-1 | 保存计划 | PHASE 4 |
 
 **使用规则**:
-- Simple 任务：直接初始化精简版列表，共 4 项
-- Moderate/Complex 任务：使用完整列表，根据 Metis 输出过滤不需要的项
+- Simple 任务：使用精简版列表，若 Metis 判断需要 Explore 则启用 p2-1
+- Standard/Complex 任务：使用完整列表，根据 Metis 输出过滤不需要的项
 
 ### 状态更新
 
@@ -494,13 +521,20 @@ PHASE 1: 复杂度评估 → todowrite(p1-1: completed)
      ↓
      判断策略 → todowrite(p1-2: completed)
     ↓
-    ├── [Simple] → todowrite(p2-1/p2-2/p2-4: cancelled)
-    │              跳过 PHASE 2
+    ├── [Simple] → 判断是否需要 Explore
+    │              │
+    │              ├── [不需要] → todowrite(p2-1: cancelled)
+    │              │              跳过 PHASE 2
+    │              │
+    │              └── [需要] → todowrite(p2-1: in_progress)
+    │                          调用 Explore task → 暂存 explore_result
+    │                          → todowrite(p2-1: completed)
+    │
     │              → PHASE 3: 生成计划 → Momus 复核（暂存 momus_result）
-    │              → 写入 plan.md → PHASE 4: 持久化 thinks/metis + thinks/momus
+    │              → 写入 plan.md → PHASE 4: 持久化 thinks/metis + thinks/explore(如有) + thinks/momus
     │              → 完成
     │
-    └── [Moderate/Complex] → 创建 steps.md → PHASE 2: 信息收集
+    └── [Standard/Complex] → 创建 steps.md → PHASE 2: 信息收集
                               │
                               ├─ todowrite(p2-1/p2-2: in_progress) [并行时]
                               ├─ 启动 Explore + Librarian task
@@ -522,16 +556,14 @@ PHASE 3: 生成计划 → todowrite(p3-1: completed)
          ↓
          处理结果 → todowrite(p3-3: completed) → 更新 steps.md（含复核历史）
     ↓
-    ├── [OKAY] → 写入 plan.md → PHASE 4: 批量持久化 thinks/*.md + complexity.json
+    ├── [OKAY] → 写入 plan.md → PHASE 4: 批量持久化 thinks/*.md + complexity.md
     │            → 补充 steps.md → 完成
     │
-    └── [REJECT] → 写入 plan.md → 判断迭代次数（reject_count）
+    └── [REJECT] → 写入 plan.md → 根据重试策略 + reject_count 决定
                      ↓
-                     ├── = 1: 重试 PHASE 2
-                     └── >= 2: 询问用户
-                                  ↓
-                                  ├── 接受 → PHASE 4 持久化 → 完成
-                                  └── 继续 → 获取指导 → 重试
+                     ├── [SKIP_RETRY]: 直接重新生成计划 → Momus 复核
+                     ├── [REANALYZE]: 重新调用分析 Agent → 生成计划 → Momus 复核
+                     └── [FULL_RETRY]: 重试 PHASE 2（按迭代规则判断是否询问用户）
 ```
 
 ---
@@ -542,7 +574,8 @@ PHASE 3: 生成计划 → todowrite(p3-1: completed)
 - 禁止修改 `.plans/` 之外的文件
 - 禁止在生成计划前调用 Momus
 - 禁止对 Metis/Momus 使用 `task` 工具 → 必须在当前会话直接执行
-- 禁止超过 2 次迭代后不询问用户
+- 禁止忽略 Momus 的重试策略（SKIP_RETRY/REANALYZE/FULL_RETRY）
+- 禁止 reject_count > 3 后继续迭代（强制接受当前计划）
 - 禁止在 Momus 复核前写入 plan.md
 
 ---
@@ -555,6 +588,6 @@ PHASE 3: 生成计划 → todowrite(p3-1: completed)
 - **每个 task 工具返回后，立即调用 todowrite 更新对应状态**
 - PHASE 4 统一持久化所有 Sub-Agent 思考过程到 `thinks/`
 - Momus 复核后才创建/更新 plan.md
-- 迭代次数 reject_count >= 2 时，先写入 plan.md 让用户阅读，再询问
-- 用户选择继续迭代时，获取指导意见并融入分析
-- 每个 PHASE 结束后更新 steps.md，确保中断时记录不丢失
+- 根据重试策略和迭代矩阵决定是否询问用户
+- 用户调整原始需求后，重置 reject_count 为 0
+- 每个 PHASE 结束后更新 steps.md（仅 Standard/Complex），确保中断时记录不丢失
