@@ -178,7 +178,7 @@ complexityScore = (
 |-----|--------|----------|------------|------------|-------------|------|------|------|
 | 修复登录 bug | 1.5 | 0 | 1.0 | 0 | 0 | 0 | 2.5 | Simple |
 | 添加用户注册 API | 2 | 1.2 | 1.0 | 1 | 0 | 0.6 | 5.4 | Moderate |
-| 重构支付模块 | 3.5 | 1.2 | 1.2 | 1.5 | 0.5 | 0.6 | 8.5 | Moderate |
+| 重构支付模块 | 3.5 | 1.2 | 1.2 | 1.5 | 0.5 | 0.6 | 8.5 | Complex |
 | 实现实时聊天功能 | 3 | 1.2 | 1.5 | 2 | 1 | 0.6 | 11.1 | Complex |
 
 ---
@@ -201,14 +201,12 @@ complexityScore = (
 # 场景：代码探索和文档研究相互独立
 todowrite([p2-1: in_progress, p2-2: in_progress])
 
-# 单次响应同时发起多个 task - 平台会并行执行
+# 单次响应同时发起多个 task - 平台会并行执行，但原子返回所有结果
 explore_result = task(subagent_type="explore", ...)
 librarian_result = task(subagent_type="librarian", ...)
 
-# 并行场景：哪个先返回就先更新哪个
-# 注意：以下两行的执行顺序取决于哪个 task 先完成
-todowrite([p2-1: completed])  # Explore 返回时立即执行
-todowrite([p2-2: completed])  # Librarian 返回时立即执行
+# 并行 task 全部返回后，批量更新状态
+todowrite([p2-1: completed, p2-2: completed])
 
 
 # ========== 串行执行 ==========
@@ -239,12 +237,11 @@ Metis 在以下场景推荐 Oracle：
 **关键规则**: 每个 Sub-Agent 任务返回后，必须立即更新 `todowrite`，不可等待其他任务完成。并行场景同理，哪个先返回就先更新哪个。
 
 **并行场景状态更新**:
-- 无法预测哪个 task 先返回
-- 必须在每次 task 返回时立即更新对应 todo
-- 即使另一个 task 仍在执行，也要立即更新已完成的那项
+- 并行 task 在同一响应中原子返回所有结果
+- 所有并行 task 返回后，批量更新状态
 
-**错误做法**: 等所有 task 返回后批量更新状态
-**正确做法**: 每个 task 返回时立即单独更新对应状态
+**错误做法**: 假设可以分批更新并行 task 的状态
+**正确做法**: 并行 task 全部返回后一次性批量更新
 
 ---
 
@@ -332,9 +329,10 @@ Metis 在以下场景推荐 Oracle：
                         重试 PHASE 2（融入指导）
 ```
 
-**迭代规则：**
-- 第 1 次 REJECT：自动重试 PHASE 2
-- 第 2 次 REJECT：询问用户决策
+**迭代规则（基于总 REJECT 次数）：**
+- `reject_count = 1`：自动重试 PHASE 2
+- `reject_count = 2`：询问用户决策
+- `reject_count > 2`：必须用户确认才能继续
 - 用户选择"继续迭代"：获取指导意见，融入下次分析
 
 ---
@@ -465,7 +463,7 @@ PHASE 1: 复杂度评估 → todowrite(p1-1: completed)
     ├── [Simple] → todowrite(p2-1/p2-2/p2-4: cancelled)
     │              跳过 PHASE 2
     │              → PHASE 3: 生成计划 → Momus 复核 → 直接写入 plan.md → 完成
-    │              （无 steps.md、无 complexity.json、无 thinks/）
+    │              （无 steps.md、无 complexity.json）
     │
     └── [Moderate/Complex] → 创建 steps.md → PHASE 2: 信息收集
                               │
