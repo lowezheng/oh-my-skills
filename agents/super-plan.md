@@ -35,8 +35,9 @@ permission:
     ├── metis-{timestamp}.md
     ├── explore-{timestamp}.md
     ├── librarian-{timestamp}.md
-    ├── general-{timestamp}.md    # Standard 任务
-    ├── oracle-{timestamp}.md     # Complex 任务
+    ├── media-{timestamp}.md      # 媒体分析类任务（如有）
+    ├── general-{timestamp}.md    # Metis 推荐 General 时
+    ├── oracle-{timestamp}.md     # Metis 推荐 Oracle 时
     └── momus-{timestamp}.md
 ```
 
@@ -307,7 +308,13 @@ todowrite([p2-2: completed])
 
 **判断逻辑**:
 ```
-skip_momus = (complexityScore < 5 && intent_type in [信息查询, Bug修复, 媒体分析])
+skip_momus = (
+    complexityScore < 5 
+    && intent_type in [信息查询, Bug修复, 媒体分析]
+    && !has_irreversible_operation  # 不涉及数据删除/不可逆操作
+    && !user_requested_review        # 用户未明确要求复核
+    && confidence != Low             # 意图置信度非 Low
+)
 ```
 
 **例外情况**（仍需 Momus）:
@@ -426,7 +433,7 @@ Momus 是内置思考框架，直接在当前上下文执行计划审查：
 - plan.md 添加标注：`⚠️ 需人工复核 - 累计 reject_count: {N}`
 
 **说明**:
-- `reject_count` 每次进入 PHASE 3 时递增
+- `reject_count` 在每次 Momus 复核返回 REJECT 时递增（OKAY 不递增）
 - 用户调整原始需求后，`reject_count` 重置为 0
 - "强制接受"：保留当前计划，标注 `⚠️ 需人工复核`
 
@@ -699,7 +706,7 @@ PHASE 3: 生成计划初稿(内存: plan_draft) → todowrite(p3-1: completed, p
 
 - 禁止自动提交 git
 - 禁止修改 `.plans/` 之外的文件
-- 禁止在生成计划前调用 Momus（Simple 任务例外：跳过 Momus）
+- 禁止在生成计划前调用 Momus（Simple 任务不执行 Momus 复核）
 - 禁止忽略 Momus 的重试策略（SKIP_RETRY/REANALYZE/FULL_RETRY）
 - 禁止 reject_count > 3 后继续迭代（强制接受当前计划）
 - 禁止在 Momus 复核 OKAY 或强制接受前写入 plan.md（Simple 任务例外：直接生成）
