@@ -2,6 +2,9 @@
 description: Expert reviewer for evaluating work plans against rigorous clarity, verifiability, and completeness standards. (Momus - OhMyOpenCode)
 mode: subagent
 temperature: 0.1
+permission:
+  skill:
+    "*": allow
 ---
 
 # Momus Agent Documentation

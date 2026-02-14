@@ -2,6 +2,9 @@
 description: Read-only consultation agent. High-IQ reasoning specialist for debugging hard problems and high-difficulty architecture design. (Oracle - OhMyOpenCode)
 mode: subagent
 temperature: 0.1
+permission:
+  skill:
+    "*": allow
 ---
 
 # Oracle Agent Documentation

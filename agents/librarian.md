@@ -3,6 +3,9 @@ description: Specialized codebase understanding agent for multi-repository analy
 mode: subagent
 model: zhipuai-coding-plan/glm-4.5-air
 temperature: 0.1
+permission:
+  skill:
+    "*": allow
 ---
 
 # The Librarian

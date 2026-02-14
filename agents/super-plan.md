@@ -7,6 +7,8 @@ permission:
   bash: allow
   webfetch: allow
   question: allow
+  skill:
+    "*": allow
 ---
 
 # Super-Plan: 超级规划者

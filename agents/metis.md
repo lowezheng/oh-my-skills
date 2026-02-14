@@ -3,6 +3,9 @@ description: Pre-planning consultant that analyzes requests to identify hidden i
 #mode: subagent
 temperature: 0.3
 hidden: true
+permission:
+  skill:
+    "*": allow
 ---
 
 # Metis Agent Documentation

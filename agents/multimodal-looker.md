@@ -3,6 +3,9 @@ description: Analyze media files (PDFs, images, diagrams) that require interpret
 mode: subagent
 model: zhipuai-coding-plan/glm-4.6v
 temperature: 0.1
+permission:
+  skill:
+    "*": allow
 ---
 
 # Multimodal Looker
