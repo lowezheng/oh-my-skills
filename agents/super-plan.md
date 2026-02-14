@@ -417,25 +417,23 @@ Momus 是内置思考框架，直接在当前上下文执行计划审查：
                             → p3-1 completed → p3-2 → 循环
 ```
 
-**迭代规则（基于 reject_count 和重试策略）：**
+**迭代规则（基于 reject_count）：**
 
 - `reject_count` 在每次 Momus 复核返回 REJECT 时递增（OKAY 不递增）
 
-| reject_count | SKIP_RETRY | REANALYZE | FULL_RETRY |
-|--------------|------------|-----------|------------|
-| = 1 | 自动执行 | 自动执行 | 自动执行 |
-| = 2 | 自动执行 | 询问用户 | 询问用户 |
-| = 3 | 自动执行 | 强制接受 | 强制接受或取消 |
-| > 3 | 强制接受 | 强制接受 | 强制接受 |
+| reject_count | 处理方式 |
+|--------------|----------|
+| = 1 | 自动执行重试（根据重试策略：SKIP_RETRY/REANALYZE/FULL_RETRY） |
+| >= 2 | 询问用户，选项：<br>• **接受**：保留当前计划<br>• **继续迭代**：可填写迭代意见，继续优化 |
 
-**强制接受时的处理**：
-- 仍需写入 `thinks/momus-{timestamp}.md`，状态标注为 `[FORCED_ACCEPT]`
-- plan.md 添加标注：`⚠️ 需人工复核 - 累计 reject_count: {N}`
+**用户选择"接受"时的处理**：
+- 写入 `thinks/momus-{timestamp}.md`，状态标注为 `[USER_ACCEPT]`
+- plan.md 添加标注：`⚠️ 用户确认接受 - 累计 reject_count: {N}`
 
 **说明**:
 - `reject_count` 在每次 Momus 复核返回 REJECT 时递增（OKAY 不递增）
 - 用户调整原始需求后，`reject_count` 重置为 0
-- "强制接受"：保留当前计划，标注 `⚠️ 需人工复核`
+- 用户选择"继续迭代"后，`reject_count` 继续累加，但仍由用户决定是否继续（无强制阈值）
 
 ---
 
@@ -693,11 +691,15 @@ PHASE 3: 生成计划初稿(内存: plan_draft) → todowrite(p3-1: completed, p
         │            → PHASE 4: 写入 complexity.md + 更新 steps.md（最终）
         │            → todowrite(p4-1: completed) → 完成
         │
-        └── [REJECT] → 根据重试策略 + reject_count 决定:
-                       ├── [SKIP_RETRY]: todowrite(p3-1: in_progress)
-                       │                 → 重新生成计划初稿 → 循环
-                       ├── [REANALYZE]: 重新调用分析 Agent → 生成计划初稿 → 循环
-                       └── [FULL_RETRY]: 重新执行 PHASE 2 → 生成计划初稿 → 循环
+        └── [REJECT] → reject_count += 1
+                        ├── [reject_count = 1]: 根据重试策略自动执行:
+                        │   ├── [SKIP_RETRY]: 重新生成计划初稿 → 循环
+                        │   ├── [REANALYZE]: 重新调用分析 Agent → 生成计划初稿 → 循环
+                        │   └── [FULL_RETRY]: 重新执行 PHASE 2 → 生成计划初稿 → 循环
+                        │
+                        └── [reject_count >= 2]: 询问用户:
+                            ├── [接受]: 写入 plan.md（标注用户确认）→ 继续 PHASE 4
+                            └── [继续迭代]: 可填写迭代意见 → 根据重试策略执行 → 循环
 ```
 
 ---
@@ -708,7 +710,7 @@ PHASE 3: 生成计划初稿(内存: plan_draft) → todowrite(p3-1: completed, p
 - 禁止修改 `.plans/` 之外的文件
 - 禁止在生成计划前调用 Momus（Simple 任务不执行 Momus 复核）
 - 禁止忽略 Momus 的重试策略（SKIP_RETRY/REANALYZE/FULL_RETRY）
-- 禁止 reject_count > 3 后继续迭代（强制接受当前计划）
+- 禁止在 reject_count >= 2 时自动重试（必须询问用户）
 - 禁止在 Momus 复核 OKAY 或强制接受前写入 plan.md（Simple 任务例外：直接生成）
 - 禁止 REJECT 时写入 plan.md（仅保存到内存变量 `plan_draft`）
 
