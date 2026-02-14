@@ -424,16 +424,66 @@ Momus 是内置思考框架，直接在当前上下文执行计划审查：
 | reject_count | 处理方式 |
 |--------------|----------|
 | = 1 | 自动执行重试（根据重试策略：SKIP_RETRY/REANALYZE/FULL_RETRY） |
-| >= 2 | 询问用户，选项：<br>• **接受**：保留当前计划<br>• **继续迭代**：可填写迭代意见，继续优化 |
+| >= 2 | 询问用户（见下方"用户询问选项"） |
+
+**用户询问选项（reject_count >= 2 时）**：
+
+```typescript
+question({
+  questions: [{
+    question: "Momus 复核发现问题，请选择处理方式：\n\n" +
+              "累计 REJECT 次数: {N}\n\n" +
+              "{Momus 阻塞问题列表}",
+    header: "复核决策",
+    options: [
+      { label: "接受当前计划", description: "保留当前计划，标注用户确认接受" },
+      { label: "继续迭代（自动优化）", description: "根据 Momus 建议，重新调用分析 Agent" },
+      { label: "完全重试（重新收集）", description: "重新执行 PHASE 2 所有信息收集" },
+      { label: "✏️ 输入迭代意见", description: "输入具体的改进方向，引导复核" }
+    ]
+  }]
+})
+```
 
 **用户选择"接受"时的处理**：
 - 写入 `thinks/momus-{timestamp}.md`，状态标注为 `[USER_ACCEPT]`
 - plan.md 添加标注：`⚠️ 用户确认接受 - 累计 reject_count: {N}`
 
+**用户选择"输入迭代意见"时的处理**：
+
+1. **获取用户输入**：用户通过 custom 选项输入具体的迭代意见
+
+2. **更新重试策略**：
+   ```markdown
+   ### 重试策略
+   - [REANALYZE]
+   - 用户迭代意见: {用户输入的内容}
+   ```
+
+3. **调用 Oracle/General 时附加用户意见**：
+   ```markdown
+   **任务**: 基于用户反馈，调整实施计划。
+
+   **用户迭代意见**:
+   {用户输入的迭代意见}
+
+   **Momus 阻塞问题**:
+   1. {问题1}
+   2. {问题2}
+
+   **要求**: 根据用户意见调整技术选型或实施顺序。
+   ```
+
+4. **更新 steps.md 复核历史**：
+   ```markdown
+   | {N} | {HH:mm:ss} | REJECT | {总结} | 继续迭代（用户意见：{摘要}） |
+   ```
+
 **说明**:
 - `reject_count` 在每次 Momus 复核返回 REJECT 时递增（OKAY 不递增）
 - 用户调整原始需求后，`reject_count` 重置为 0
 - 用户选择"继续迭代"后，`reject_count` 继续累加，但仍由用户决定是否继续（无强制阈值）
+- 用户迭代意见会作为附加 prompt 传给 Oracle/General，引导分析方向
 
 ---
 
@@ -498,9 +548,18 @@ Momus 是内置思考框架，直接在当前上下文执行计划审查：
 
 ## 复核历史
 
-| 轮次 | 时间 | 状态 | 总结 | 用户决策 |
-|------|------|------|------|----------|
-| {N} | {HH:mm:ss} | {OKAY/REJECT} | {总结} | {-/继续/接受} |
+| 轮次 | 时间 | 状态 | 总结 | 用户决策 | 迭代意见 |
+|------|------|------|------|----------|----------|
+| {N} | {HH:mm:ss} | {OKAY/REJECT} | {总结} | {-/继续/接受} | {如有} |
+
+**用户决策字段说明**:
+- `-`: 首次 REJECT（reject_count = 1），自动重试
+- `继续`: 用户选择继续迭代
+- `接受`: 用户选择接受当前计划
+
+**迭代意见字段**:
+- 用户选择"输入迭代意见"时，记录意见摘要
+- 其他情况留空
 
 ## 备注
 - 执行策略: {并行/串行/单Agent}
@@ -699,7 +758,9 @@ PHASE 3: 生成计划初稿(内存: plan_draft) → todowrite(p3-1: completed, p
                         │
                         └── [reject_count >= 2]: 询问用户:
                             ├── [接受]: 写入 plan.md（标注用户确认）→ 继续 PHASE 4
-                            └── [继续迭代]: 可填写迭代意见 → 根据重试策略执行 → 循环
+                            ├── [继续迭代（自动优化）]: REANALYZE → 循环
+                            ├── [完全重试]: FULL_RETRY → 循环
+                            └── [输入迭代意见]: 获取用户输入 → REANALYZE（附加用户意见）→ 循环
 ```
 
 ---
@@ -713,6 +774,7 @@ PHASE 3: 生成计划初稿(内存: plan_draft) → todowrite(p3-1: completed, p
 - 禁止在 reject_count >= 2 时自动重试（必须询问用户）
 - 禁止在 Momus 复核 OKAY 或强制接受前写入 plan.md（Simple 任务例外：直接生成）
 - 禁止 REJECT 时写入 plan.md（仅保存到内存变量 `plan_draft`）
+- 禁止忽略用户输入的迭代意见（必须附加到 Oracle/General 的 prompt 中）
 
 ---
 
@@ -728,3 +790,5 @@ PHASE 3: 生成计划初稿(内存: plan_draft) → todowrite(p3-1: completed, p
 - 根据重试策略和迭代矩阵决定是否询问用户
 - 用户调整原始需求后，重置 reject_count 为 0
 - PHASE 2 结束创建 steps.md，PHASE 4 最终更新（仅 Standard/Complex）
+- **用户输入迭代意见时，必须将意见附加到 Oracle/General 的 prompt 中**
+- **steps.md 复核历史需记录用户迭代意见（如有）**
