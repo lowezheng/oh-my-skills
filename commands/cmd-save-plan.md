@@ -12,8 +12,7 @@ agent: build
     - 为后续执行者或自己回顾时提供清晰的执行路线图
 # 如何操作
  ## 1. 确定文件路径
-    - ***主优先***操作保存位置：`.opencode/plans/{任务名}/yyMMddHHmm-Vx.x.md` 
-    - ***次优先***操作保存位置：`.sisyphus/plans/{任务名}/yyMMddHHmm-Vx.x.md` 
+    - ***主优先***操作保存位置：`.plans/{任务名}/yyMMddHHmm-Vx.x.md` 
     
     文件命名规范：
     - `xxxx`: 任务名称的简短描述（英文或拼音）
