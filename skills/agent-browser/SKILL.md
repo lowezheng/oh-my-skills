@@ -255,6 +255,26 @@ agent-browser find placeholder "Search" type "query"
 agent-browser find testid "submit-btn" click
 ```
 
+## ⚠️ When snapshot Fails to Find Clickable Elements
+
+If `snapshot -i` doesn't show expected buttons/links (common in ag-Grid, Ant Design tables):
+
+**Quick fix - use text search:**
+```bash
+agent-browser find text "查看" click --first
+```
+
+**Or scan all clickable elements with JS:**
+```bash
+agent-browser eval --stdin <<'EOF'
+[...document.querySelectorAll('a, button, [role="button"]')]
+  .filter(el => el.textContent.trim())
+  .forEach((el, i) => console.log(i, el.tagName, el.textContent.trim().slice(0,30)))
+EOF
+```
+
+**See [references/clickable-detection.md](references/clickable-detection.md) for complete solutions.**
+
 ## JavaScript Evaluation (eval)
 
 Use `eval` to run JavaScript in the browser context. **Shell quoting can corrupt complex expressions** -- use `--stdin` or `-b` to avoid issues.
@@ -290,6 +310,7 @@ agent-browser eval -b "$(echo -n 'Array.from(document.querySelectorAll("a")).map
 |-----------|-------------|
 | [references/commands.md](references/commands.md) | Full command reference with all options |
 | [references/snapshot-refs.md](references/snapshot-refs.md) | Ref lifecycle, invalidation rules, troubleshooting |
+| [references/clickable-detection.md](references/clickable-detection.md) | **Detecting clickable elements not found by snapshot** |
 | [references/session-management.md](references/session-management.md) | Parallel sessions, state persistence, concurrent scraping |
 | [references/authentication.md](references/authentication.md) | Login flows, OAuth, 2FA handling, state reuse |
 | [references/video-recording.md](references/video-recording.md) | Recording workflows for debugging and documentation |
