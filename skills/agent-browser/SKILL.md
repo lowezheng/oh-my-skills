@@ -6,6 +6,37 @@ allowed-tools: Bash(agent-browser:*)
 
 # Browser Automation with agent-browser
 
+---
+
+## ⚠️ CRITICAL: CHECK CDP PORT FIRST ⚠️
+
+**Check if debug port 9222 is open before browser operations:**
+
+```bash
+curl -s http://localhost:9222/json/version
+```
+
+| Result | Action |
+|--------|--------|
+| ✅ Returns JSON | **REUSE existing browser** - Add `--cdp 9222` to ALL commands |
+| ❌ Connection refused | Open new browser directly |
+
+**Pattern:**
+```bash
+# Check port first
+curl -s http://localhost:9222/json/version
+
+# If connected -> use --cdp 9222
+agent-browser --cdp 9222 open https://example.com
+agent-browser --cdp 9222 snapshot -i
+agent-browser --cdp 9222 click @e1
+
+# If not connected -> open new browser
+agent-browser open https://example.com
+```
+
+---
+
 ## Core Workflow
 
 Every browser automation follows this pattern:
