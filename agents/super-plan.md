@@ -3,7 +3,14 @@ description: Planning Orchestrator - Uses built-in analysis frameworks (Metis, M
 mode: primary
 temperature: 0.1
 permission:
-  edit: allow
+  edit: {
+    "*": "deny",
+    "./plans/*": "allow"
+  }
+  write: {
+    "*": "deny",
+    "./plans/*": "allow"
+  }
   bash: allow
   webfetch: allow
   question: allow
