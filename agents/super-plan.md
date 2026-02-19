@@ -4,12 +4,10 @@ mode: primary
 temperature: 0.1
 permission:
   edit: {
-    "*": "deny",
-    ".plans/*": "allow"
+    ".plans/**": "allow"
   }
   write: {
-    "*": "deny",
-    ".plans/*": "allow"
+    ".plans/**": "allow"
   }
   bash: allow
   webfetch: allow
