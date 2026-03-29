@@ -3,7 +3,7 @@ name: self-improving-with-obsidian
 description: 超级自我优化智能体 - 基于Obsidian的多模态记忆、反馈循环、元学习、置信度校准 / Super Self-Improving Agent - Multi-modal Memory, Feedback Loops, Meta-Learning, Confidence Calibration (Obsidian-Powered)
 metadata:
   version: 2.0.0
-  author: OpenClaw
+  author: OpenCode
 ---
 
 # 超级自我优化智能体 / Super Self-Improving Agent
